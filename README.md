@@ -1,6 +1,5 @@
 # Transwarp
 
-<img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/c93e9c0b-4136-43f6-b12a-0d201e7f9f97" />
 
 
 Transwarp is a lightweight Go library designed to bridge the gap between standard net/http and popular web frameworks. It allows you to write framework-agnostic handlers and middlewares, giving you the freedom to switch between Gin, Echo, Fiber, or Chi without changing your core business logic.
