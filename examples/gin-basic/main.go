@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/profe-ajedrez/transwarp/adapter/ginadapter"
 	"github.com/profe-ajedrez/transwarp/middleware"
 	"github.com/profe-ajedrez/transwarp/server"
@@ -20,11 +19,9 @@ type UserDTO struct {
 }
 
 func main() {
-	// 1. Initialize the native framework (Gin).
-	engine := gin.New()
 
 	// 2. Wrap it with the Transwarp Adapter.
-	adp := ginadapter.New(engine)
+	adp := ginadapter.NewGinAdapter()
 
 	// 3. Define routes using Transwarp's unified API.
 	adp.GET("/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -51,7 +48,7 @@ func main() {
 		WriteTimeout: 10 * time.Second,
 	}, adp)
 
-	fmt.Println("Example server running on http://localhost:8080")
+	fmt.Println("Example server running on http://localhost:8080 over  gin")
 	if err := srv.Start(context.Background()); err != nil {
 		fmt.Printf("Server failed: %v\n", err)
 	}
