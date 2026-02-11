@@ -1,0 +1,5308 @@
+==============================================================================
+FILE: ./router/router.go
+==============================================================================
+package router
+
+import (
+	"net/http"
+)
+
+type ctxKey string
+
+const (
+	ParamsKey     ctxKey = "___transwarp_params___"
+	RouteKey      ctxKey = "___transwarp_route___"
+	NextKey       ctxKey = "___transwarp_next___"
+	BodyCacheKey  ctxKey = "___transwarp_body_cache___"
+	StateKey      ctxKey = "___transwarp_state___"
+	ValidationKey ctxKey = "___transwarp_validator_key___"
+)
+
+type RouterAdapter interface {
+	http.Handler
+	GET(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler)
+	POST(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler)
+	PUT(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler)
+	DELETE(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler)
+	Use(mws ...func(http.Handler) http.Handler)
+	Param(r *http.Request, key string) string
+	Group(prefix string) RouterAdapter
+	Engine() any
+}
+
+
+
+==============================================================================
+FILE: ./server/server.go
+==============================================================================
+package server
+
+import (
+	"context"
+	"errors"
+	"net"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+const (
+	defaultReadTimeout  = 10 * time.Second
+	defaultWriteTimeout = 15 * time.Second
+	defaultIdleTimeout  = 60 * time.Second
+)
+
+type Config struct {
+	Addr         string
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+	IdleTimeout  time.Duration
+}
+
+type Server struct {
+	cfg        Config
+	httpServer *http.Server
+	adapter    router.Router
+	ln         net.Listener
+	addr       string
+	mu         sync.RWMutex
+	ready      chan struct{}
+}
+
+func New(cfg Config, adapter router.Router) *Server {
+	// 1. Aplicamos valores por defecto si no se proveen
+	if cfg.ReadTimeout == 0 {
+		cfg.ReadTimeout = defaultReadTimeout
+	}
+	if cfg.WriteTimeout == 0 {
+		cfg.WriteTimeout = defaultWriteTimeout
+	}
+	if cfg.IdleTimeout == 0 {
+		cfg.IdleTimeout = defaultIdleTimeout
+	}
+
+	s := &Server{
+		cfg:     cfg,
+		adapter: adapter,
+		ready:   make(chan struct{}),
+	}
+
+	// 2. Configuramos el servidor HTTP interno
+	s.httpServer = &http.Server{
+		Addr:         cfg.Addr,
+		Handler:      adapter,
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
+		IdleTimeout:  cfg.IdleTimeout,
+	}
+
+	return s
+}
+
+// Start inicia el servidor de forma bloqueante
+func (s *Server) Start() error {
+	ln, err := net.Listen("tcp", s.cfg.Addr)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	s.ln = ln
+	s.addr = ln.Addr().String()
+	s.mu.Unlock()
+
+	close(s.ready) // Liberamos a quienes esperan por Addr()
+
+	// 3. Manejo de cierre esperado
+	err = s.httpServer.Serve(ln)
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+
+	return nil
+}
+
+// Shutdown realiza un cierre ordenado del servidor
+func (s *Server) Shutdown(ctx context.Context) error {
+	return s.httpServer.Shutdown(ctx)
+}
+
+// Addr retorna la dirección real (útil para puertos :0 en tests)
+func (s *Server) Addr() string {
+	select {
+	case <-s.ready:
+		// Ya inicializado
+	case <-time.After(5 * time.Second):
+		// Timeout de seguridad por si Start nunca se llamó
+		return ""
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.addr
+}
+
+
+
+==============================================================================
+FILE: ./server/server_test.go
+==============================================================================
+package server_test
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/profe-ajedrez/transwarp/router"
+	"github.com/profe-ajedrez/transwarp/server"
+)
+
+func TestServer_GracefulShutdown(t *testing.T) {
+	// 1. Definimos un handler que tarda 1 segundo en responder
+	requestStarted := make(chan struct{})
+	requestFinished := make(chan struct{})
+
+	slowHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		time.Sleep(1 * time.Second) // Simula trabajo pesado
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("finalizado"))
+		close(requestFinished)
+	})
+
+	adapter := &mockAdapter{handler: slowHandler}
+	srv := server.New(server.Config{Addr: "127.0.0.1:0"}, adapter) // Puerto 0 para puerto dinámico libre
+
+	// 2. Iniciamos el servidor en una goroutine
+	serverErr := make(chan error, 1)
+	go func() {
+		serverErr <- srv.Start()
+	}()
+
+	// Esperamos a que el servidor esté realmente escuchando
+	addr := srv.Addr()
+
+	// 3. Lanzamos la petición lenta en otra goroutine
+	clientResult := make(chan string, 1)
+	go func() {
+		resp, err := http.Get("http://" + addr)
+		if err != nil {
+			clientResult <- "error: " + err.Error()
+			return
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		clientResult <- string(body)
+	}()
+
+	// Esperamos a que la petición llegue al servidor
+	<-requestStarted
+
+	// 4. Ejecutamos el Shutdown MIENTRAS la petición está en curso
+	shutdownStart := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := srv.Shutdown(ctx)
+	if err != nil {
+		t.Fatalf("Shutdown falló: %v", err)
+	}
+
+	// 5. Verificaciones Finales
+
+	// A. El cliente debió recibir su respuesta completa (no un error de conexión cerrada)
+	select {
+	case res := <-clientResult:
+		if res != "finalizado" {
+			t.Errorf("El cliente no recibió la respuesta esperada: %s", res)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("Timeout esperando la respuesta del cliente")
+	}
+
+	// B. El servidor debió cerrarse sin errores
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			t.Errorf("Start() devolvió un error inesperado: %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("El servidor no se detuvo después del Shutdown")
+	}
+
+	// C. Validar que el tiempo de Shutdown fue razonable (esperó al handler)
+	duration := time.Since(shutdownStart)
+	if duration < 1*time.Second {
+		t.Errorf("El Shutdown fue demasiado rápido (%v), no parece haber esperado al handler", duration)
+	}
+}
+
+// MockAdapter simple para pruebas de servidor
+type mockAdapter struct {
+	handler http.HandlerFunc
+}
+
+func (m *mockAdapter) ServeHTTP(w http.ResponseWriter, r *http.Request)                            { m.handler(w, r) }
+func (m *mockAdapter) Param(r *http.Request, key string) string                                    { return "" }
+func (m *mockAdapter) Group(prefix string) router.Router                                    { return m }
+func (m *mockAdapter) GET(p string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler)    {}
+func (m *mockAdapter) POST(p string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler)   {}
+func (m *mockAdapter) PUT(p string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler)    {}
+func (m *mockAdapter) DELETE(p string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {}
+func (m *mockAdapter) Use(mws ...func(http.Handler) http.Handler)                                  {}
+func (m *mockAdapter) Engine() any                                                                 { return nil }
+
+
+
+==============================================================================
+FILE: ./transwarp.go
+==============================================================================
+package transwarp
+
+import (
+	"net/http"
+
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+var _ router.Router = &Transwarp{}
+
+// Transwarp es la estructura principal que el usuario final utiliza.
+type Transwarp struct {
+	adapter router.Router
+}
+
+// New es el constructor que estabas preguntando.
+// Recibe cualquier cosa que implemente la interfaz RouterAdapter.
+func New(adapter router.Router) *Transwarp {
+	return &Transwarp{
+		adapter: adapter,
+	}
+}
+
+// ServeHTTP permite que Transwarp sea un http.Handler estándar de Go.
+func (t *Transwarp) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	t.adapter.ServeHTTP(w, r)
+}
+
+// GET, POST, etc., simplemente delegan al adaptador.
+func (t *Transwarp) GET(path string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	t.adapter.GET(path, h, m...)
+}
+
+// Param recupera los parámetros delegando la lógica al adaptador específico.
+func (t *Transwarp) Param(r *http.Request, key string) string {
+	return t.adapter.Param(r, key)
+}
+
+func (t *Transwarp) POST(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	t.adapter.POST(path, h, mws...)
+}
+
+func (t *Transwarp) PUT(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	t.adapter.PUT(path, h, mws...)
+}
+
+func (t *Transwarp) DELETE(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	t.adapter.DELETE(path, h, mws...)
+}
+
+func (t *Transwarp) Use(mws ...func(http.Handler) http.Handler) {
+	t.adapter.Use(mws...)
+}
+
+func (t *Transwarp) Group(prefix string) router.Router {
+	return t.adapter.Group(prefix)
+}
+
+func (t *Transwarp) Engine() any {
+	return t.adapter.Engine()
+}
+
+
+
+==============================================================================
+FILE: ./recovery.go
+==============================================================================
+package transwarp
+
+import (
+	"fmt"
+	"log"
+	"net/http"
+	"runtime/debug"
+)
+
+// Recovery devuelve un middleware que recupera el servidor de cualquier panic.
+func Recovery(stack bool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if err := recover(); err != nil {
+					// 1. Log del error
+					message := fmt.Sprintf("PANIC RECOVERED: %v", err)
+					if stack {
+						message = fmt.Sprintf("%s\n\n%s", message, string(debug.Stack()))
+					}
+					log.Println(message)
+
+					// 2. Respuesta estructurada
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+
+					// Evitamos detalles internos en producción si stack es falso
+					body := `{"error": "Internal Server Error"}`
+					if stack {
+						body = fmt.Sprintf(`{"error": %q}`, message)
+					}
+					_, _ = w.Write([]byte(body))
+				}
+			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+
+
+==============================================================================
+FILE: ./middleware/validator.go
+==============================================================================
+package middleware
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"reflect"
+	"strings"
+
+	"github.com/go-playground/validator/v10"
+	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+var validate = validator.New()
+
+// ValidationError define la estructura de cada fallo individual para el cliente
+type ValidationError struct {
+	Field   string `json:"field"`
+	Rule    string `json:"rule"`
+	Message string `json:"message"`
+}
+
+func Validate[T any](_ T) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// 1. Obtener el estado de Transwarp (inyectado por el adaptador)
+			state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
+			if !ok {
+				http.Error(w, "Transwarp state not found", http.StatusInternalServerError)
+				return
+			}
+
+			// 2. Crear una nueva instancia del tipo T
+			target := new(T)
+
+			// 3. BINDING: Prioridad 1 - Body (JSON)
+			if len(state.Body) > 0 {
+				if err := json.Unmarshal(state.Body, target); err != nil {
+					sendJSONError(w, "Invalid JSON format", http.StatusBadRequest)
+					return
+				}
+			}
+
+			// 4. BINDING: Prioridad 2 - Path Params (Mapeo por tags "param")
+			mapPathParams(target, state.Params)
+
+			// 5. VALIDATION: Ejecutar reglas de go-playground/validator
+			if err := validate.Struct(target); err != nil {
+				details := formatValidationErrors(err)
+				sendDetailedError(w, details)
+				return
+			}
+
+			// 6. INJECTION: Guardar los datos limpios en el contexto
+			ctx := context.WithValue(r.Context(), router.ValidationKey, target)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// --- Helpers de Mapeo y Formateo ---
+
+func mapPathParams(target any, params map[string]string) {
+	val := reflect.ValueOf(target).Elem()
+	typ := val.Type()
+
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		tag := field.Tag.Get("param")
+		if tag != "" {
+			if paramVal, exists := params[tag]; exists {
+				f := val.Field(i)
+				if f.CanSet() && f.Kind() == reflect.String {
+					f.SetString(paramVal)
+				}
+			}
+		}
+	}
+}
+
+func formatValidationErrors(err error) []ValidationError {
+	var errors []ValidationError
+	if vErrors, ok := err.(validator.ValidationErrors); ok {
+		for _, vErr := range vErrors {
+			errors = append(errors, ValidationError{
+				Field:   strings.ToLower(vErr.Field()),
+				Rule:    vErr.Tag(),
+				Message: createMsgForTag(vErr),
+			})
+		}
+	}
+	return errors
+}
+
+func createMsgForTag(v validator.FieldError) string {
+	switch v.Tag() {
+	case "required":
+		return "This field is required"
+	case "email":
+		return "Invalid email format"
+	case "min":
+		return fmt.Sprintf("Minimum length/value is %s", v.Param())
+	case "max":
+		return fmt.Sprintf("Maximum length/value is %s", v.Param())
+	default:
+		return fmt.Sprintf("Validation failed on rule: %s", v.Tag())
+	}
+}
+
+// --- Respuestas de Error Estandarizadas ---
+
+func sendJSONError(w http.ResponseWriter, msg string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+func sendDetailedError(w http.ResponseWriter, errors []ValidationError) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnprocessableEntity)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status": "error",
+		"errors": errors,
+	})
+}
+
+
+
+==============================================================================
+FILE: ./middleware/validator_test.go
+==============================================================================
+package middleware
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+// Definimos un struct de prueba que use ambos orígenes de datos
+type SignupRequest struct {
+	ID    string `param:"id" validate:"required,min=5"`
+	Email string `json:"email" validate:"required,email"`
+	Age   int    `json:"age" validate:"required,gte=18"`
+}
+
+func TestValidate_HybridBinding(t *testing.T) {
+	// 1. Setup: Crear el middleware para nuestro struct
+	mw := Validate(SignupRequest{})
+
+	// Handler final que verifica si los datos llegaron inyectados
+	finalHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data := r.Context().Value(router.ValidationKey).(*SignupRequest)
+
+		if data.ID != "user-123" {
+			t.Errorf("ID del parámetro no mapeado correctamente. Esperado user-123, obtenido %s", data.ID)
+		}
+		if data.Email != "test@transwarp.io" {
+			t.Errorf("Email del JSON no mapeado correctamente")
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// 2. Simular el estado que inyectaría un adaptador de Transwarp
+	state := &adapter.TranswarpState{
+		Params: map[string]string{"id": "user-123"},
+		Body:   []byte(`{"email": "test@transwarp.io", "age": 25}`),
+	}
+
+	// 3. Ejecutar la petición
+	req := httptest.NewRequest(http.MethodPost, "/users/user-123", bytes.NewReader(state.Body))
+	// Inyectamos manualmente el estado en el contexto (simulando al adaptador)
+	ctx := context.WithValue(req.Context(), router.StateKey, state)
+	req = req.WithContext(ctx)
+
+	rr := httptest.NewRecorder()
+	mw(finalHandler).ServeHTTP(rr, req)
+
+	// 4. Verificación
+	if rr.Code != http.StatusOK {
+		t.Errorf("Se esperaba StatusOK, se obtuvo %d. Body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestValidate_ValidationError(t *testing.T) {
+	mw := Validate(SignupRequest{})
+
+	// Estado con datos inválidos (ID muy corto, Email mal formado, Menor de edad)
+	state := &adapter.TranswarpState{
+		Params: map[string]string{"id": "123"},                 // min=5 fallará
+		Body:   []byte(`{"email": "not-an-email", "age": 10}`), // email y gte=18 fallarán
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	ctx := context.WithValue(req.Context(), router.StateKey, state)
+	req = req.WithContext(ctx)
+
+	rr := httptest.NewRecorder()
+	// El handler final no debería ejecutarse nunca
+	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("El handler final no debió ejecutarse debido a errores de validación")
+	})).ServeHTTP(rr, req)
+
+	// Verificamos el status 422
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Errorf("Esperado 422, obtenido %d", rr.Code)
+	}
+
+	// Verificamos la estructura del JSON de error
+	var response map[string]any
+	json.Unmarshal(rr.Body.Bytes(), &response)
+
+	errors := response["errors"].([]any)
+	if len(errors) != 3 {
+		t.Errorf("Se esperaban 3 errores de validación, se obtuvieron %d", len(errors))
+	}
+}
+
+
+
+==============================================================================
+FILE: ./adapter/adapter.go
+==============================================================================
+package adapter
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+// RunMuxContract ejecuta la batería de pruebas específica para drivers basados en net/http
+func RunMuxContract(t *testing.T, factory func() router.Router) {
+
+	t.Run("Parámetros Simples y con Extensiones", func(t *testing.T) {
+		// IMPORTANTE: Cada sub-test debe pedir una instancia limpia para evitar pánicos por rutas duplicadas en Mux
+		adapter := factory()
+
+		// Ruta estándar
+		adapter.GET("/user/:id", func(w http.ResponseWriter, r *http.Request) {
+			id := adapter.Param(r, "id")
+			w.Write([]byte("id:" + id))
+		})
+
+		// Ruta con extensión (Clave: id.json)
+		adapter.GET("/file/:id.json", func(w http.ResponseWriter, r *http.Request) {
+			id := adapter.Param(r, "id.json")
+			w.Write([]byte("file:" + id))
+		})
+
+		// Caso 1: ID Simple
+		req1 := httptest.NewRequest(http.MethodGet, "/user/123", nil)
+		rec1 := httptest.NewRecorder()
+		adapter.ServeHTTP(rec1, req1)
+		if rec1.Body.String() != "id:123" {
+			t.Errorf("Esperado id:123, obtenido %s", rec1.Body.String())
+		}
+
+		// Caso 2: ID con Extensión literal
+		req2 := httptest.NewRequest(http.MethodGet, "/file/data.json", nil)
+		rec2 := httptest.NewRecorder()
+		adapter.ServeHTTP(rec2, req2)
+		if rec2.Body.String() != "file:data.json" {
+			if rec2.Body.String() != "file:data" {
+				t.Errorf("Esperado file:data.json, obtenido %s", rec2.Body.String())
+				return
+			}
+			t.Errorf("Esperado file:data.json, obtenido %s", rec2.Body.String())
+		}
+	})
+
+	t.Run("Jerarquía de Middlewares", func(t *testing.T) {
+		adapter := factory()
+		result := ""
+
+		mw1 := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				result += "A"
+				next.ServeHTTP(w, r)
+			})
+		}
+
+		mw2 := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				result += "B"
+				next.ServeHTTP(w, r)
+			})
+		}
+
+		adapter.Use(mw1) // Global
+		adapter.GET("/test-mw", func(w http.ResponseWriter, r *http.Request) {
+			result += "C"
+		}, mw2) // Local de ruta
+
+		req := httptest.NewRequest(http.MethodGet, "/test-mw", nil)
+		adapter.ServeHTTP(httptest.NewRecorder(), req)
+
+		// El orden debe ser: Global (A) -> Local (B) -> Handler (C)
+		if result != "ABC" {
+			t.Errorf("Orden de middlewares incorrecto. Esperado ABC, obtenido %s", result)
+		}
+	})
+
+	t.Run("Grupos y Prefijos", func(t *testing.T) {
+		adapter := factory()
+		api := adapter.Group("/api")
+		v1 := api.Group("/v1")
+
+		v1.GET("/users", func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("users_list"))
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/users", nil)
+		rec := httptest.NewRecorder()
+		adapter.ServeHTTP(rec, req)
+
+		if rec.Body.String() != "users_list" {
+			t.Errorf("Error en prefijos de grupo. Obtenido: %s", rec.Body.String())
+		}
+	})
+}
+
+func RunRouterContract(t *testing.T, factory func() router.Router) {
+
+	t.Run("Parámetros y Extensiones", func(t *testing.T) {
+		adapter := factory()
+		// Test de :id y :id.extension
+		adapter.GET("/user/:id", func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("plain:" + adapter.Param(r, "id")))
+		})
+		adapter.GET("/file/:name.json", func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("json:" + adapter.Param(r, "name.json")))
+		})
+
+		// Caso 1
+		req1 := httptest.NewRequest(http.MethodGet, "/user/123", nil)
+		rec1 := httptest.NewRecorder()
+		adapter.ServeHTTP(rec1, req1)
+		if rec1.Body.String() != "plain:123" {
+			t.Errorf("Esperado plain:123, obtenido %s", rec1.Body.String())
+		}
+
+		// Caso 2 (El reto del punto)
+		req2 := httptest.NewRequest(http.MethodGet, "/file/config.json", nil)
+		rec2 := httptest.NewRecorder()
+		adapter.ServeHTTP(rec2, req2)
+		if rec2.Body.String() != "json:config.json" {
+			t.Errorf("Esperado json:config.json, obtenido %s", rec2.Body.String())
+		}
+	})
+
+	t.Run("Propagación de Contexto Nativo", func(t *testing.T) {
+		adapter := factory()
+		type ctxKey string
+		const key ctxKey = "user_id"
+
+		// Middleware que inyecta valor en el context.Context estándar
+		mw := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ctx := context.WithValue(r.Context(), key, "profe-77")
+				next.ServeHTTP(w, r.WithContext(ctx))
+			})
+		}
+
+		adapter.Use(mw)
+		adapter.GET("/profile", func(w http.ResponseWriter, r *http.Request) {
+			val := r.Context().Value(key).(string)
+			w.Write([]byte(val))
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/profile", nil)
+		rec := httptest.NewRecorder()
+		adapter.ServeHTTP(rec, req)
+
+		if rec.Body.String() != "profe-77" {
+			t.Errorf("El contexto se perdió. Esperado profe-77, obtenido %s", rec.Body.String())
+		}
+	})
+
+	t.Run("Cortocircuito de Middlewares (Security Test)", func(t *testing.T) {
+		adapter := factory()
+		handlerReached := false
+
+		// Middleware que NO llama a next (simula error de Auth)
+		authMw := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte("unauthorized"))
+				// NO llamamos a next.ServeHTTP
+			})
+		}
+
+		adapter.GET("/secret", func(w http.ResponseWriter, r *http.Request) {
+			handlerReached = true
+		}, authMw)
+
+		req := httptest.NewRequest(http.MethodGet, "/secret", nil)
+		rec := httptest.NewRecorder()
+		adapter.ServeHTTP(rec, req)
+
+		if handlerReached {
+			t.Error("El handler fue ejecutado a pesar del Abort del middleware")
+		}
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("Status esperado 401, obtenido %d", rec.Code)
+		}
+	})
+
+	t.Run("Multiples Parámetros Complejos", func(t *testing.T) {
+		adapter := factory()
+
+		// Ruta con múltiples parámetros
+		adapter.GET("/org/:org_id/repo/:repo_name/files/:path", func(w http.ResponseWriter, r *http.Request) {
+			org := adapter.Param(r, "org_id")
+			repo := adapter.Param(r, "repo_name")
+			path := adapter.Param(r, "path")
+			w.Write([]byte(org + "|" + repo + "|" + path))
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/org/my.org/repo/my-repo/files/main.go", nil)
+		rec := httptest.NewRecorder()
+		adapter.ServeHTTP(rec, req)
+
+		expected := "my.org|my-repo|main.go"
+		if rec.Body.String() != expected {
+			t.Errorf("Múltiples parámetros fallaron. Esperado %s, obtenido %s", expected, rec.Body.String())
+		}
+	})
+
+	t.Run("Aislamiento de Grupos y Middlewares", func(t *testing.T) {
+		adapter := factory()
+		logs := []string{}
+
+		mwAdmin := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				logs = append(logs, "admin")
+				next.ServeHTTP(w, r)
+			})
+		}
+
+		admin := adapter.Group("/admin")
+		admin.Use(mwAdmin)
+		admin.GET("/dashboard", func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("ok"))
+		})
+
+		public := adapter.Group("/public")
+		public.GET("/home", func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("ok"))
+		})
+
+		// 1. Hit public
+		reqPub := httptest.NewRequest(http.MethodGet, "/public/home", nil)
+		adapter.ServeHTTP(httptest.NewRecorder(), reqPub)
+
+		if len(logs) > 0 {
+			t.Error("El middleware de admin se filtró al grupo público")
+		}
+
+		// 2. Hit admin
+		reqAdm := httptest.NewRequest(http.MethodGet, "/admin/dashboard", nil)
+		adapter.ServeHTTP(httptest.NewRecorder(), reqAdm)
+
+		if len(logs) != 1 || logs[0] != "admin" {
+			t.Error("El middleware de admin no se ejecutó correctamente")
+		}
+	})
+
+	t.Run("Inmutabilidad de Handlers Originales", func(t *testing.T) {
+		// Este test asegura que el adapter no corrompa el body o el request original
+		adapter := factory()
+
+		adapter.POST("/echo", func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			w.Write(body)
+		})
+
+		payload := "hello world"
+		req := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader(payload))
+		rec := httptest.NewRecorder()
+		adapter.ServeHTTP(rec, req)
+
+		if rec.Body.String() != payload {
+			t.Errorf("El Body se corrompió. Esperado %s, obtenido %s", payload, rec.Body.String())
+		}
+	})
+
+	t.Run("Normalización de Unión de Grupos", func(t *testing.T) {
+		adapter := factory()
+
+		// Probamos que el usuario puede ser descuidado en la unión,
+		// pero consistente en el recurso.
+		api := adapter.Group("/api/")
+		api.GET("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("ok"))
+		})
+
+		// El request debe ser /api/health (sin dobles slashes)
+		req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+		rec := httptest.NewRecorder()
+		adapter.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("La unión de grupo generó una ruta inválida. Status: %d", rec.Code)
+		}
+	})
+}
+
+func RunAdvancedRouterContract(t *testing.T, factory func() router.Router) {
+
+	t.Run("Prioridad de Rutas: Estáticas vs Dinámicas", func(t *testing.T) {
+		// Este test garantiza que el router no sea "avaricioso" y prefiera matches exactos
+		adapter := factory()
+
+		// Registramos una dinámica y una estática que colisionan
+		adapter.GET("/post/:id", func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("dynamic:" + adapter.Param(r, "id")))
+		})
+		adapter.GET("/post/featured", func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("static_featured"))
+		})
+
+		// Caso 1: Debe caer en la estática a pesar de que "featured" podría ser un :id
+		req1 := httptest.NewRequest(http.MethodGet, "/post/featured", nil)
+		rec1 := httptest.NewRecorder()
+		adapter.ServeHTTP(rec1, req1)
+		if rec1.Body.String() != "static_featured" {
+			t.Errorf("Prioridad fallida. Se esperaba la ruta estática, se obtuvo: %s", rec1.Body.String())
+		}
+
+		// Caso 2: Debe caer en la dinámica
+		req2 := httptest.NewRequest(http.MethodGet, "/post/123", nil)
+		rec2 := httptest.NewRecorder()
+		adapter.ServeHTTP(rec2, req2)
+		if rec2.Body.String() != "dynamic:123" {
+			t.Errorf("Ruta dinámica no alcanzada. Obtenido: %s", rec2.Body.String())
+		}
+	})
+
+	t.Run("Anidamiento Profundo y 'The Onion' Middleware", func(t *testing.T) {
+		// Prueba 5 niveles de grupos con middlewares que envuelven la respuesta
+		adapter := factory()
+		order := ""
+
+		mw := func(tag string) func(http.Handler) http.Handler {
+			return func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					order += "(" + tag
+					next.ServeHTTP(w, r)
+					order += tag + ")"
+				})
+			}
+		}
+
+		// Estructura: Root -> G1 -> G2 -> G3 -> G4 -> Handler
+		g1 := adapter.Group("/g1")
+		g1.Use(mw("1"))
+		g2 := g1.Group("/g2")
+		g2.Use(mw("2"))
+		g3 := g2.Group("/g3")
+		g3.Use(mw("3"))
+		g4 := g3.Group("/g4")
+		g4.Use(mw("4"))
+
+		g4.GET("/end", func(w http.ResponseWriter, r *http.Request) {
+			order += "X"
+		}, mw("5")) // Middleware local
+
+		req := httptest.NewRequest(http.MethodGet, "/g1/g2/g3/g4/end", nil)
+		adapter.ServeHTTP(httptest.NewRecorder(), req)
+
+		expected := "(1(2(3(4(5X5)4)3)2)1)"
+		if order != expected {
+			t.Errorf("La jerarquía 'Onion' es incorrecta.\nEsperado: %s\nObtenido: %s", expected, order)
+		}
+	})
+
+	t.Run("Integridad de Query Params vs Path Params", func(t *testing.T) {
+		// Garantiza que los parámetros de ruta no ensucien o borren los de la URL
+		adapter := factory()
+
+		adapter.GET("/search/:category", func(w http.ResponseWriter, r *http.Request) {
+			pathParam := adapter.Param(r, "category")
+			queryParam := r.URL.Query().Get("q")
+			w.Write([]byte(pathParam + "|" + queryParam))
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/search/books?q=golang&page=1", nil)
+		rec := httptest.NewRecorder()
+		adapter.ServeHTTP(rec, req)
+
+		if rec.Body.String() != "books|golang" {
+			t.Errorf("Colisión entre parámetros detectada. Obtenido: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("Rutas de Comodín (Catch-All / Wildcards)", func(t *testing.T) {
+		// Test para rutas tipo /static/* que capturan sub-rutas completas
+		adapter := factory()
+
+		adapter.GET("/static/*path", func(w http.ResponseWriter, r *http.Request) {
+			// El nombre del parámetro puede variar según el driver (* o path)
+			// Transwarp debe normalizar esto.
+			val := adapter.Param(r, "path")
+			if val == "" {
+				val = adapter.Param(r, "*") // Fallback si no se normalizó el nombre
+			}
+			w.Write([]byte("path:" + val))
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/static/images/logo/brand.png", nil)
+		rec := httptest.NewRecorder()
+		adapter.ServeHTTP(rec, req)
+
+		// El resultado esperado depende de si el driver incluye el slash inicial o no,
+		// pero "images/logo/brand.png" debe estar presente.
+		if !strings.Contains(rec.Body.String(), "images/logo/brand.png") {
+			t.Errorf("Wildcard fallido. Obtenido: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("Sincronización de Status y Headers en Middlewares", func(t *testing.T) {
+		// Verifica que si un middleware escribe un header y el handler otro, ambos lleguen
+		adapter := factory()
+
+		mw := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Middleware", "true")
+				next.ServeHTTP(w, r)
+			})
+		}
+
+		adapter.GET("/headers", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Handler", "true")
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte("ok"))
+		}, mw)
+
+		req := httptest.NewRequest(http.MethodGet, "/headers", nil)
+		rec := httptest.NewRecorder()
+		adapter.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Errorf("Status code perdido. Esperado 201, obtenido %d", rec.Code)
+		}
+		if rec.Header().Get("X-Middleware") != "true" || rec.Header().Get("X-Handler") != "true" {
+			t.Error("Uno de los headers se perdió en el bridge")
+		}
+	})
+
+	t.Run("Concurrencia de Peticiones (Race Condition Test)", func(t *testing.T) {
+		// Este test corre múltiples peticiones en paralelo sobre el mismo adaptador
+		// para asegurar que el bridge no comparta estados (como los params) entre hilos.
+		adapter := factory()
+
+		adapter.GET("/worker/:id", func(w http.ResponseWriter, r *http.Request) {
+			id := adapter.Param(r, "id")
+			w.Write([]byte(id))
+		})
+
+		const count = 50
+		results := make(chan struct {
+			result                 bool
+			req                    int
+			input, output, decoded string
+		}, count)
+
+		for i := 0; i < count; i++ {
+			go func(i int, val string) {
+				req := httptest.NewRequest(http.MethodGet, "/worker/"+val, nil)
+				rec := httptest.NewRecorder()
+				adapter.ServeHTTP(rec, req)
+
+				v := rec.Body.String()
+
+				decodedVal, _ := url.PathUnescape(val)
+
+				results <- struct {
+					result                 bool
+					req                    int
+					input, output, decoded string
+				}{
+					result:  v == val || rec.Body.String() == decodedVal,
+					req:     i,
+					input:   val,
+					output:  v,
+					decoded: decodedVal,
+				}
+
+			}(i, string(rune(i+65))) // A, B, C...
+		}
+
+		for i := 0; i < count; i++ {
+			result := <-results
+
+			if !result.result {
+				t.Logf("fallo petición %d  input: %v output %v  decodedVal %v", i, result.input, result.output, result.decoded)
+				t.Error("Fallo de seguridad en concurrencia: los parámetros se cruzaron entre peticiones")
+				break
+			}
+		}
+	})
+
+	t.Run("Middleware Body Access", func(t *testing.T) {
+		adapter := factory()
+		payload := `{"cmd":"ping"}`
+
+		// Middleware que lee el body y lo deja disponible para el siguiente
+		mw := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				// IMPORTANTE: Aquí el adapter/middleware debe restaurar el body
+				r.Body = io.NopCloser(strings.NewReader(string(body)))
+				next.ServeHTTP(w, r)
+			})
+		}
+
+		adapter.POST("/body", func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			w.Write(body)
+		}, mw)
+
+		req := httptest.NewRequest(http.MethodPost, "/body", strings.NewReader(payload))
+		rec := httptest.NewRecorder()
+		adapter.ServeHTTP(rec, req)
+
+		if rec.Body.String() != payload {
+			t.Errorf("El body se perdió tras la lectura del middleware. Obtenido: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("Ambiguity Torture Test", func(t *testing.T) {
+		adapter := factory()
+
+		// 1. Estática pura
+		adapter.GET("/a/b/c", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("static")) })
+		// 2. Un parámetro
+		adapter.GET("/a/:b/c", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("param:" + adapter.Param(r, "b"))) })
+		// 3. Wildcard
+		adapter.GET("/a/*", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("wildcard")) })
+
+		// Caso A: Debe ser static
+		req1 := httptest.NewRequest(http.MethodGet, "/a/b/c", nil)
+		rec1 := httptest.NewRecorder()
+		adapter.ServeHTTP(rec1, req1)
+		if rec1.Body.String() != "static" {
+			t.Errorf("Falló estática. Obtenido: %s", rec1.Body.String())
+		}
+
+		// Caso B: Debe ser param
+		req2 := httptest.NewRequest(http.MethodGet, "/a/otro/c", nil)
+		rec2 := httptest.NewRecorder()
+		adapter.ServeHTTP(rec2, req2)
+		if rec2.Body.String() != "param:otro" {
+			t.Errorf("Falló param. Obtenido: %s", rec2.Body.String())
+		}
+	})
+}
+
+
+
+==============================================================================
+FILE: ./adapter/common.go
+==============================================================================
+package adapter
+
+import (
+	"regexp"
+	"strings"
+)
+
+// colonRegex captura el nombre del parámetro (ej: id, id.json, user-id)
+var colonRegex = regexp.MustCompile(`:([a-zA-Z0-9._-]+)`)
+
+func TranslatePath(path string) string {
+	return colonRegex.ReplaceAllStringFunc(path, func(m string) string {
+		key := strings.TrimPrefix(m, ":")
+		return "{" + key + "}"
+	})
+}
+
+
+
+==============================================================================
+FILE: ./adapter/ginadapter/gin.go
+==============================================================================
+package ginadapter
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+
+	"github.com/gin-gonic/gin"
+	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+// Límite de seguridad para evitar que el caché crezca infinitamente
+const defaultMaxShadowCacheSize = 10000
+
+type routeEntry struct {
+	method       string
+	path         string
+	h            http.HandlerFunc
+	mws          []func(http.Handler) http.Handler
+	regex        *regexp.Regexp
+	wildcardName string
+}
+
+type GinAdapter struct {
+	engine      *gin.Engine
+	prefix      string
+	middlewares []func(http.Handler) http.Handler
+	routes      *[]*routeEntry
+	once        *sync.Once
+
+	// Sistema de Caché con protección
+	shadowCache     *sync.Map
+	shadowCacheSize int32 // Contador atómico para O(1) en la verificación de tamaño
+	maxCacheSize    int
+}
+
+func NewGinAdapter() *GinAdapter {
+	gin.SetMode(gin.ReleaseMode)
+	e := gin.New()
+	return &GinAdapter{
+		engine:       e,
+		prefix:       "",
+		routes:       &[]*routeEntry{},
+		once:         &sync.Once{},
+		shadowCache:  &sync.Map{},
+		maxCacheSize: defaultMaxShadowCacheSize,
+	}
+}
+
+// SetMaxShadowCacheSize permite ajustar el límite de memoria del caché dinámico.
+func (a *GinAdapter) SetMaxShadowCacheSize(size int) {
+	a.maxCacheSize = size
+}
+
+func (a *GinAdapter) Param(r *http.Request, key string) string {
+	state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
+	if !ok || state.Params == nil {
+		return ""
+	}
+
+	// 1. Coincidencia exacta (ej: "id")
+	if val, ok := state.Params[key]; ok {
+		return val
+	}
+
+	// 2. Búsqueda inteligente: Si pides "id" pero capturamos "id.json"
+	for k, v := range state.Params {
+		if strings.HasPrefix(k, key+".") {
+			return v
+		}
+	}
+
+	// 3. Búsqueda inversa: Si pides "file.json" pero capturamos "file"
+	if dotIdx := strings.Index(key, "."); dotIdx != -1 {
+		baseKey := key[:dotIdx]
+		if val, ok := state.Params[baseKey]; ok {
+			return val
+		}
+	}
+
+	return ""
+}
+
+func (a *GinAdapter) Group(prefix string) router.Router {
+	cleanPrefix := a.prefix + "/" + strings.Trim(prefix, "/")
+	cleanPrefix = strings.ReplaceAll(cleanPrefix, "//", "/")
+
+	return &GinAdapter{
+		engine:       a.engine,
+		prefix:       strings.TrimSuffix(cleanPrefix, "/"),
+		middlewares:  append([]func(http.Handler) http.Handler{}, a.middlewares...),
+		routes:       a.routes,
+		once:         a.once,
+		shadowCache:  a.shadowCache,
+		maxCacheSize: a.maxCacheSize,
+	}
+}
+
+func (a *GinAdapter) Use(mws ...func(http.Handler) http.Handler) {
+	a.middlewares = append(a.middlewares, mws...)
+}
+
+func (a *GinAdapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	a.once.Do(func() { a.registerAll() })
+
+	state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
+	if !ok {
+		state = &adapter.TranswarpState{Params: make(map[string]string)}
+	}
+
+	// Lazy Body Reading inicial
+	if state.Body == nil && r.Body != nil && r.Body != http.NoBody && r.Method != http.MethodGet {
+		body, _ := io.ReadAll(r.Body)
+		state.Body = body
+		r.Body = io.NopCloser(bytes.NewReader(body))
+	}
+
+	ctx := context.WithValue(r.Context(), router.StateKey, state)
+	a.engine.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// --- Gestión de Shadow Cache ---
+
+func (a *GinAdapter) deployShadowRouter(prefix string, routes []*routeEntry) {
+	sort.SliceStable(routes, func(i, j int) bool {
+		return a.getRouteScore(routes[i].path) < a.getRouteScore(routes[j].path)
+	})
+
+	for _, r := range routes {
+		r.regex, r.wildcardName = a.buildRegex(r.path)
+	}
+
+	a.engine.Any(prefix+"/*any", func(c *gin.Context) {
+		reqPath := c.Request.URL.Path
+		method := c.Request.Method
+		cacheKey := method + "|" + reqPath
+
+		// 1. Intento de recuperación del caché
+		if cached, ok := a.shadowCache.Load(cacheKey); ok {
+			a.dispatchWithParams(c, cached.(*routeEntry), reqPath)
+			return
+		}
+
+		// 2. Despacho por Regex
+		for _, r := range routes {
+			if r.method != method {
+				continue
+			}
+			if r.regex.MatchString(reqPath) {
+				// 3. Almacenamiento con protección de memoria
+				currentSize := atomic.LoadInt32(&a.shadowCacheSize)
+
+				if int(currentSize) >= a.maxCacheSize {
+					// Purga masiva: si llegamos al límite, reseteamos el mapa.
+					// Es un enfoque agresivo pero seguro para evitar OOM.
+					a.shadowCache = &sync.Map{}
+					atomic.StoreInt32(&a.shadowCacheSize, 0)
+				}
+
+				a.shadowCache.Store(cacheKey, r)
+				atomic.AddInt32(&a.shadowCacheSize, 1)
+
+				a.dispatchWithParams(c, r, reqPath)
+				return
+			}
+		}
+		c.Status(http.StatusNotFound)
+	})
+}
+
+func (a *GinAdapter) dispatchWithParams(c *gin.Context, r *routeEntry, path string) {
+	state, _ := c.Request.Context().Value(router.StateKey).(*adapter.TranswarpState)
+	matches := r.regex.FindStringSubmatch(path)
+
+	newParams := make(map[string]string)
+	for k, v := range state.Params {
+		newParams[k] = v
+	}
+
+	names := r.regex.SubexpNames()
+	for i, name := range names {
+		if i != 0 && name != "" && i < len(matches) {
+			realName := strings.ReplaceAll(name, "_DOT_", ".")
+			newParams[realName] = matches[i]
+		}
+	}
+
+	if r.wildcardName != "" {
+		val := newParams[r.wildcardName]
+		newParams["*"] = val
+		newParams["path"] = val
+	}
+
+	newState := &adapter.TranswarpState{Params: newParams, Body: state.Body}
+	ctx := context.WithValue(c.Request.Context(), router.StateKey, newState)
+
+	var finalHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		r.h(w, req)
+	})
+
+	for i := len(r.mws) - 1; i >= 0; i-- {
+		finalHandler = r.mws[i](finalHandler)
+	}
+
+	finalHandler.ServeHTTP(c.Writer, c.Request.WithContext(ctx))
+}
+
+// --- Registro de Rutas Nativas y Helpers ---
+
+func (a *GinAdapter) registerInGin(r *routeEntry) {
+	ginPath, wcName := a.preparePath(r.path)
+	handlers := a.createGinStack(r.h, r.mws, wcName)
+	a.engine.Handle(r.method, ginPath, handlers...)
+}
+
+func (a *GinAdapter) createGinStack(h http.HandlerFunc, mws []func(http.Handler) http.Handler, wcName string) []gin.HandlerFunc {
+	var stack []gin.HandlerFunc
+
+	for _, mw := range mws {
+		currentMw := mw
+		stack = append(stack, func(c *gin.Context) {
+			calledNext := false
+			stdNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calledNext = true
+				c.Request = r
+				c.Next()
+			})
+			currentMw(stdNext).ServeHTTP(c.Writer, c.Request)
+			if !calledNext {
+				c.Abort()
+			}
+		})
+	}
+
+	stack = append(stack, func(c *gin.Context) {
+		if c.IsAborted() {
+			return
+		}
+
+		state, _ := c.Request.Context().Value(router.StateKey).(*adapter.TranswarpState)
+		newParams := make(map[string]string)
+		for k, v := range state.Params {
+			newParams[k] = v
+		}
+
+		for _, p := range c.Params {
+			newParams[p.Key] = p.Value
+		}
+
+		if wcName != "" {
+			val := c.Param(wcName)
+			newParams["*"] = val
+			newParams["path"] = val
+		}
+
+		newState := &adapter.TranswarpState{Params: newParams, Body: state.Body}
+		ctx := context.WithValue(c.Request.Context(), router.StateKey, newState)
+		h(c.Writer, c.Request.WithContext(ctx))
+	})
+
+	return stack
+}
+
+func (a *GinAdapter) registerAll() {
+	shadowZones := make(map[string][]*routeEntry)
+	conflictingPrefixes := make(map[string]bool)
+	prefixTypes := make(map[string]map[string]bool)
+
+	for _, r := range *a.routes {
+		base := a.getStaticBase(r.path)
+		if prefixTypes[base] == nil {
+			prefixTypes[base] = make(map[string]bool)
+		}
+		if strings.Contains(r.path, ":") {
+			prefixTypes[base][":"] = true
+		}
+		if strings.Contains(r.path, "*") {
+			prefixTypes[base]["*"] = true
+		}
+	}
+
+	for base, types := range prefixTypes {
+		if types[":"] && types["*"] {
+			conflictingPrefixes[base] = true
+		}
+	}
+
+	for _, r := range *a.routes {
+		isShadowed := false
+		for pref := range conflictingPrefixes {
+			if r.path == pref || strings.HasPrefix(r.path, pref+"/") {
+				shadowZones[pref] = append(shadowZones[pref], r)
+				isShadowed = true
+				break
+			}
+		}
+		if !isShadowed {
+			a.registerInGin(r)
+		}
+	}
+
+	for prefix, routes := range shadowZones {
+		a.deployShadowRouter(prefix, routes)
+	}
+}
+
+func (a *GinAdapter) buildRegex(path string) (*regexp.Regexp, string) {
+	wildcardName := ""
+	p := strings.ReplaceAll(path, ":", "__P__")
+	p = strings.ReplaceAll(p, "*", "__W__")
+	p = regexp.QuoteMeta(p)
+
+	reParam := regexp.MustCompile(`__P__([a-zA-Z0-9_.]+)`)
+	p = reParam.ReplaceAllStringFunc(p, func(m string) string {
+		name := strings.TrimPrefix(m, "__P__")
+		safeName := strings.ReplaceAll(name, ".", "_DOT_")
+		return fmt.Sprintf(`(?P<%s>[^/]+)`, safeName)
+	})
+
+	reWild := regexp.MustCompile(`__W__([a-zA-Z0-9_]*)`)
+	p = reWild.ReplaceAllStringFunc(p, func(match string) string {
+		name := strings.TrimPrefix(match, "__W__")
+		if name == "" {
+			name = "any"
+		}
+		wildcardName = name
+		return fmt.Sprintf(`(?P<%s>.*)`, name)
+	})
+
+	return regexp.MustCompile("^" + p + "$"), wildcardName
+}
+
+func (a *GinAdapter) getStaticBase(path string) string {
+	parts := strings.Split(path, "/")
+	for i, p := range parts {
+		if strings.HasPrefix(p, ":") || strings.HasPrefix(p, "*") {
+			if i == 0 {
+				return "/"
+			}
+			return strings.Join(parts[:i], "/")
+		}
+	}
+	return "/"
+}
+
+func (a *GinAdapter) getRouteScore(path string) int {
+	if strings.Contains(path, "*") {
+		return 3
+	}
+	if strings.Contains(path, ":") {
+		return 2
+	}
+	return 1
+}
+
+func (a *GinAdapter) preparePath(path string) (string, string) {
+	if idx := strings.Index(path, "*"); idx != -1 {
+		name := path[idx+1:]
+		if name == "" {
+			name = "any"
+		}
+		return path[:idx] + "*" + name, name
+	}
+
+	segments := strings.Split(path, "/")
+	for i, seg := range segments {
+		if strings.HasPrefix(seg, ":") {
+			// :id.json -> :id
+			if dotIdx := strings.Index(seg, "."); dotIdx != -1 {
+				segments[i] = seg[:dotIdx]
+			}
+		}
+	}
+	return strings.Join(segments, "/"), ""
+}
+
+func (a *GinAdapter) GET(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register(http.MethodGet, p, h, m...)
+}
+func (a *GinAdapter) POST(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register(http.MethodPost, p, h, m...)
+}
+func (a *GinAdapter) PUT(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register(http.MethodPut, p, h, m...)
+}
+func (a *GinAdapter) DELETE(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register(http.MethodDelete, p, h, m...)
+}
+
+func (a *GinAdapter) register(m, p string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	full := a.prefix + "/" + strings.TrimPrefix(p, "/")
+	full = strings.ReplaceAll(full, "//", "/")
+	*a.routes = append(*a.routes, &routeEntry{method: m, path: full, h: h, mws: append(a.middlewares, mws...)})
+}
+
+func (a *GinAdapter) Engine() any { return a.engine }
+
+
+
+==============================================================================
+FILE: ./adapter/ginadapter/gin_test.go
+==============================================================================
+package ginadapter_test
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/profe-ajedrez/transwarp/adapter/ginadapter"
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+func TestAdapter_Compliance(t *testing.T) {
+	// Ejecutamos la suite de contrato estándar.
+	// Pasamos una fábrica que genera un motor de Gin nuevo por cada sub-test.
+	adapter.RunMuxContract(t, func() router.Router {
+		return ginadapter.NewGinAdapter()
+	})
+}
+
+func TestAdapter_Contract(t *testing.T) {
+	adapter.RunRouterContract(t, func() router.Router {
+		// Usamos la config que maneja los puntos
+		return ginadapter.NewGinAdapter()
+	})
+}
+
+func TestAdapter_Advanced(t *testing.T) {
+	// Ejecutamos la batería de pruebas de contrato.
+	// Cada sub-test recibe una instancia limpia del adaptador.
+	adapter.RunAdvancedRouterContract(t, func() router.Router {
+		return ginadapter.NewGinAdapter()
+	})
+}
+
+func TestGinAdapter_Specifics(t *testing.T) {
+	t.Run("Requisito de Extensiones :id.json", func(t *testing.T) {
+		driver := ginadapter.NewGinAdapter()
+		var captured string
+
+		// Registramos la ruta tal como pide el requerimiento
+		driver.GET("/user/:id.json", func(w http.ResponseWriter, r *http.Request) {
+			captured = driver.Param(r, "id.json") // Gin mapea :id antes del literal .json
+			w.WriteHeader(http.StatusOK)
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/user/123.json", nil)
+		rec := httptest.NewRecorder()
+		driver.ServeHTTP(rec, req)
+
+		if captured != "123.json" {
+			t.Errorf("Falló la captura del ID con extensión. Esperado 123, obtenido %s", captured)
+		}
+	})
+
+	t.Run("Inyección de Contexto en Middlewares", func(t *testing.T) {
+		driver := ginadapter.NewGinAdapter()
+
+		// Definimos una clave de contexto local y la variable de captura
+		type ctxKey string
+		const myKey ctxKey = "transwarp_test_key"
+		var capturedValue string
+
+		// 1. Middleware estándar (func(http.Handler) http.Handler)
+		mw := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Inyectamos un valor en el context nativo
+				ctx := context.WithValue(r.Context(), myKey, "pasa_por_el_bridge")
+				// IMPORTANTE: Pasamos el nuevo request con el contexto actualizado
+				next.ServeHTTP(w, r.WithContext(ctx))
+			})
+		}
+
+		// 2. Configuramos el driver
+		driver.Use(mw)
+		driver.GET("/ctx-test", func(w http.ResponseWriter, r *http.Request) {
+			// El handler recupera el valor del contexto nativo
+			if val, ok := r.Context().Value(myKey).(string); ok {
+				capturedValue = val
+			}
+			w.WriteHeader(http.StatusOK)
+		})
+
+		// 3. Ejecutamos la petición
+		req := httptest.NewRequest(http.MethodGet, "/ctx-test", nil)
+		rec := httptest.NewRecorder()
+		driver.ServeHTTP(rec, req)
+
+		// 4. Verificación final
+		if capturedValue != "pasa_por_el_bridge" {
+			t.Errorf("El contexto se perdió en el bridge. Esperado 'pasa_por_el_bridge', obtenido '%s'", capturedValue)
+		}
+	})
+}
+
+func TestGinAdapter_ShortCircuitProtection(t *testing.T) {
+	// 1. Setup
+	gin.SetMode(gin.ReleaseMode)
+	adapter := ginadapter.NewGinAdapter()
+
+	handlerExecuted := false
+
+	// 2. Definimos un middleware "Portero" (Estándar)
+	// Este middleware simula una falla de seguridad: escribe error y corta.
+	securityMw := func(_ http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte("bloqueado por seguridad"))
+			// IMPORTANTE: NO llamamos a next.ServeHTTP(w, r)
+		})
+	}
+
+	// 3. Registramos la ruta protegida
+	adapter.GET("/protegido", func(w http.ResponseWriter, _ *http.Request) {
+		handlerExecuted = true // Si esto cambia a true, el bridge falló
+		w.Write([]byte("información sensible"))
+	}, securityMw)
+
+	// 4. Ejecución
+	req := httptest.NewRequest(http.MethodGet, "/protegido", nil)
+	rec := httptest.NewRecorder()
+	adapter.ServeHTTP(rec, req)
+
+	// 5. Verificaciones (Aserciones)
+	if handlerExecuted {
+		t.Errorf("FALLO DE SEGURIDAD: El handler final se ejecutó a pesar de que el middleware abortó.")
+	}
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("Status incorrecto: esperado 403, obtenido %d", rec.Code)
+	}
+
+	if rec.Body.String() != "bloqueado por seguridad" {
+		t.Errorf("Cuerpo incorrecto: esperado 'bloqueado...', obtenido '%s'", rec.Body.String())
+	}
+}
+
+func TestGinAdapter_ShadowZone_RaceCondition(t *testing.T) {
+	adapter := ginadapter.NewGinAdapter()
+
+	// Registramos rutas que causan una "Shadow Zone" en /conflict
+	adapter.GET("/conflict/:id/data", func(w http.ResponseWriter, r *http.Request) {
+		id := adapter.Param(r, "id")
+		w.Write([]byte("id:" + id))
+	})
+
+	adapter.GET("/conflict/*path", func(w http.ResponseWriter, r *http.Request) {
+		path := adapter.Param(r, "path")
+		w.Write([]byte("path:" + path))
+	})
+
+	const iterations = 200
+	var wg sync.WaitGroup
+	wg.Add(iterations)
+
+	for i := 0; i < iterations; i++ {
+		go func(val int) {
+			defer wg.Done()
+
+			// Alternamos entre la ruta de parámetro y la de wildcard
+			var path, expected string
+			if val%2 == 0 {
+				path = fmt.Sprintf("/conflict/%d/data", val)
+				expected = fmt.Sprintf("id:%d", val)
+			} else {
+				path = fmt.Sprintf("/conflict/extra/path/%d", val)
+				expected = fmt.Sprintf("path:extra/path/%d", val)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			adapter.ServeHTTP(rec, req)
+
+			if rec.Body.String() != expected {
+				t.Errorf("¡Colisión de datos! URL: %s | Esperado: %s | Obtenido: %s", path, expected, rec.Body.String())
+			}
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+func TestFromGin(t *testing.T) {
+	// Seteamos Gin en modo Release para evitar logs ruidosos en los tests
+	gin.SetMode(gin.ReleaseMode)
+
+	t.Run("Flujo Exitoso (c.Next)", func(t *testing.T) {
+		reachedHandler := false
+
+		// 1. Middleware de Gin que simplemente pasa
+		ginMw := func(c *gin.Context) {
+			c.Header("X-Test-Middleware", "passed")
+			c.Next()
+		}
+
+		// 2. Adaptamos el middleware
+		stdMw := ginadapter.FromGin(ginMw)
+
+		// 3. Handler final
+		handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			reachedHandler = true
+			w.WriteHeader(http.StatusOK)
+		})
+
+		// 4. Ejecución
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+		stdMw(handler).ServeHTTP(rec, req)
+
+		if !reachedHandler {
+			t.Error("El handler final no fue alcanzado")
+		}
+		if rec.Header().Get("X-Test-Middleware") != "passed" {
+			t.Error("El middleware de Gin no pudo modificar los headers")
+		}
+	})
+
+	t.Run("Interrupción de Cadena (c.Abort)", func(t *testing.T) {
+		reachedHandler := false
+
+		// 1. Middleware de Gin que aborta (ej: Auth fallido)
+		ginMw := func(c *gin.Context) {
+			c.AbortWithStatus(http.StatusUnauthorized)
+		}
+
+		stdMw := ginadapter.FromGin(ginMw)
+
+		handler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			reachedHandler = true
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+		stdMw(handler).ServeHTTP(rec, req)
+
+		if reachedHandler {
+			t.Error("El handler final fue alcanzado pero el middleware llamó a c.Abort()")
+		}
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("Esperado status 401, obtenido %d", rec.Code)
+		}
+	})
+
+	t.Run("Propagación de Contexto Nativo", func(t *testing.T) {
+		type ctxKey string
+		const key ctxKey = "user"
+		var capturedUser string
+
+		// 1. Middleware de Gin corregido
+		ginMw := func(c *gin.Context) {
+			// Leemos del contexto nativo para validar que el bridge funciona
+			user, ok := c.Request.Context().Value(key).(string)
+			if !ok || user == "" {
+				c.AbortWithStatus(http.StatusInternalServerError)
+				return
+			}
+
+			// Inyectamos un valor nuevo "hacia adelante"
+			ctx := context.WithValue(c.Request.Context(), ctxKey("role"), "admin")
+			c.Request = c.Request.WithContext(ctx)
+			c.Next()
+		}
+
+		stdMw := ginadapter.FromGin(ginMw)
+
+		// 2. Handler final que captura ambos valores
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			capturedUser = r.Context().Value(key).(string)
+			role, _ := r.Context().Value(ctxKey("role")).(string)
+			w.Write([]byte(role))
+		})
+
+		// 3. Configuración del request con contexto inicial
+		rootCtx := context.WithValue(context.Background(), key, "profe-ajedrez")
+		req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(rootCtx)
+		rec := httptest.NewRecorder()
+
+		stdMw(handler).ServeHTTP(rec, req)
+
+		// 4. Aserciones
+		if capturedUser != "profe-ajedrez" {
+			t.Errorf("El contexto original se perdió. Obtenido: %s", capturedUser)
+		}
+		if rec.Body.String() != "admin" {
+			t.Error("El contexto modificado por el middleware de Gin no llegó al handler")
+		}
+	})
+
+	t.Run("Seguridad en Concurrencia (Race Condition Check)", func(t *testing.T) {
+		// Este test asegura que el 'next' de una petición no se mezcle con el de otra
+		ginMw := func(c *gin.Context) { c.Next() }
+		stdMw := ginadapter.FromGin(ginMw)
+
+		const iterations = 100
+		var wg sync.WaitGroup
+		wg.Add(iterations)
+
+		for i := range iterations {
+			go func(val int) {
+				defer wg.Done()
+
+				// Cada petición espera un valor distinto en el body
+				expected := string(rune(val))
+				handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Write([]byte(expected))
+				})
+
+				req := httptest.NewRequest(http.MethodGet, "/", nil)
+				rec := httptest.NewRecorder()
+				stdMw(handler).ServeHTTP(rec, req)
+
+				if rec.Body.String() != expected {
+					t.Errorf("Mezcla de peticiones detectada: esperado %s, obtenido %s", expected, rec.Body.String())
+				}
+			}(i)
+		}
+		wg.Wait()
+	})
+}
+
+
+
+==============================================================================
+FILE: ./adapter/ginadapter/middleware_adapter.go
+==============================================================================
+package ginadapter
+
+import (
+	"context"
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+func FromGin(ginMw gin.HandlerFunc) func(http.Handler) http.Handler {
+	engine := gin.New()
+	engine.Use(ginMw)
+	engine.Any("/*path", func(c *gin.Context) {
+		if next, ok := c.Request.Context().Value(router.NextKey).(http.Handler); ok {
+			state, ok := c.Request.Context().Value(router.StateKey).(*adapter.TranswarpState)
+			if ok {
+				for _, p := range c.Params {
+					state.Params[p.Key] = p.Value
+				}
+			}
+			next.ServeHTTP(c.Writer, c.Request)
+		}
+	})
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
+			if !ok {
+				state = &adapter.TranswarpState{Params: make(map[string]string)}
+				r = r.WithContext(context.WithValue(r.Context(), router.StateKey, state))
+			}
+			ctx := context.WithValue(r.Context(), router.NextKey, next)
+			engine.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+
+
+==============================================================================
+FILE: ./adapter/ginadapter/gin_bench_test.go
+==============================================================================
+package ginadapter
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/profe-ajedrez/transwarp"
+	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+func BenchmarkGin(b *testing.B) {
+	adapter.RunSuiteBenchmarks(b, func() router.Router {
+		return NewGinAdapter()
+	})
+}
+
+func BenchmarkGin_ShadowZone(b *testing.B) {
+	adp := NewGinAdapter()
+
+	// Forzamos la creación de una Shadow Zone (Colisión)
+	adp.GET("/conflict/:id/data", func(w http.ResponseWriter, r *http.Request) {})
+	adp.GET("/conflict/*path", func(w http.ResponseWriter, r *http.Request) {})
+
+	// Caso A: Primer Hit (Costo de Regex + Cache Store)
+	// Caso B: Hits subsiguientes (Costo de sync.Map.Load)
+
+	req := httptest.NewRequest(http.MethodGet, "/conflict/123/data", nil)
+	b.Run("Shadow/FirstMatch", func(b *testing.B) {
+		// No reseteamos el timer para incluir el primer proceso
+		for i := 0; i < b.N; i++ {
+			adp.ServeHTTP(httptest.NewRecorder(), req)
+		}
+	})
+}
+
+func BenchmarkGin_Native(b *testing.B) {
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.GET("/bench", func(c *gin.Context) {
+		c.String(200, "ok")
+	})
+	req := httptest.NewRequest(http.MethodGet, "/bench", nil)
+	w := httptest.NewRecorder()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		r.ServeHTTP(w, req)
+	}
+}
+
+func BenchmarkGin_Transwarp(b *testing.B) {
+	tw := transwarp.New(NewGinAdapter())
+	tw.GET("/bench", transwarpHandler)
+	req := httptest.NewRequest(http.MethodGet, "/bench", nil)
+	w := httptest.NewRecorder()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tw.ServeHTTP(w, req)
+	}
+}
+
+func transwarpHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
+
+
+==============================================================================
+FILE: ./adapter/ginadapter/gin_smoke_test.go
+==============================================================================
+package ginadapter_test
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/profe-ajedrez/transwarp/adapter/ginadapter"
+	"github.com/profe-ajedrez/transwarp/server"
+)
+
+func TestTranswarp_FullStack_SmokeTest_Gin(t *testing.T) {
+	adapter := ginadapter.NewGinAdapter()
+
+	// Ruta con extensión: :id.json
+	adapter.GET("/api/v1/users/:id.json", func(w http.ResponseWriter, r *http.Request) {
+		id := adapter.Param(r, "id")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok","id":"` + id + `"}`))
+	})
+
+	srv := server.New(server.Config{Addr: "127.0.0.1:0"}, adapter)
+	srvErr := make(chan error, 1)
+	go func() { srvErr <- srv.Start() }()
+
+	addr := srv.Addr()
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	// Realizamos la petición
+	resp, err := client.Get("http://" + addr + "/api/v1/users/admin.json")
+	if err != nil {
+		t.Fatalf("Error en la petición: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	// Esperamos admin.json (Consistencia Transwarp)
+	expected := `{"status":"ok","id":"admin.json"}`
+	if string(body) != expected {
+		t.Errorf("Gin falló.\nEsperado: %s\nObtenido: %s", expected, string(body))
+	}
+
+	// Graceful Shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	srv.Shutdown(ctx)
+}
+
+
+
+==============================================================================
+FILE: ./adapter/echoadapter/echo.go
+==============================================================================
+package echoadapter
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+
+	"github.com/labstack/echo/v5"
+	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+const defaultMaxShadowCacheSize = 10000
+
+type routeEntry struct {
+	method       string
+	path         string
+	h            http.HandlerFunc
+	mws          []func(http.Handler) http.Handler
+	regex        *regexp.Regexp
+	wildcardName string
+}
+
+type EchoAdapter struct {
+	instance    *echo.Echo
+	prefix      string
+	middlewares []func(http.Handler) http.Handler
+	routes      *[]*routeEntry
+	once        *sync.Once
+
+	// Shadow System
+	shadowCache     *sync.Map
+	shadowCacheSize int32
+	maxCacheSize    int
+}
+
+func NewEchoAdapter() *EchoAdapter {
+	e := echo.New()
+	return &EchoAdapter{
+		instance:     e,
+		prefix:       "",
+		routes:       &[]*routeEntry{},
+		once:         &sync.Once{},
+		shadowCache:  &sync.Map{},
+		maxCacheSize: defaultMaxShadowCacheSize,
+	}
+}
+
+func (a *EchoAdapter) Param(r *http.Request, key string) string {
+	state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
+	if !ok || state.Params == nil {
+		return ""
+	}
+
+	// 1. Coincidencia exacta (ej: "id" o "file.json")
+	if val, ok := state.Params[key]; ok {
+		return val
+	}
+
+	// 2. Búsqueda inteligente: Si pides "id" pero capturamos "id.json"
+	for k, v := range state.Params {
+		if k == key || strings.HasPrefix(k, key+".") {
+			return v
+		}
+	}
+
+	// 3. Búsqueda inversa: Si pides "file.json" pero capturamos "file"
+	if dotIdx := strings.Index(key, "."); dotIdx != -1 {
+		baseKey := key[:dotIdx]
+		if val, ok := state.Params[baseKey]; ok {
+			return val
+		}
+	}
+
+	return ""
+}
+
+func (a *EchoAdapter) Group(prefix string) router.Router {
+	return &EchoAdapter{
+		instance:     a.instance,
+		prefix:       a.joinPaths(a.prefix, prefix),
+		middlewares:  append([]func(http.Handler) http.Handler{}, a.middlewares...),
+		routes:       a.routes,
+		once:         a.once,
+		shadowCache:  a.shadowCache,
+		maxCacheSize: a.maxCacheSize,
+	}
+}
+
+func (a *EchoAdapter) Use(mws ...func(http.Handler) http.Handler) {
+	a.middlewares = append(a.middlewares, mws...)
+}
+
+func (a *EchoAdapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	a.once.Do(func() { a.registerAll() })
+
+	state := &adapter.TranswarpState{Params: make(map[string]string)}
+
+	// Lazy Body Reading
+	if r.Body != nil && r.Body != http.NoBody && r.Method != http.MethodGet {
+		body, _ := io.ReadAll(r.Body)
+		state.Body = body
+		r.Body = io.NopCloser(bytes.NewReader(body))
+	}
+
+	ctx := context.WithValue(r.Context(), router.StateKey, state)
+	a.instance.ServeHTTP(w, r.WithContext(ctx))
+}
+
+func (a *EchoAdapter) registerAll() {
+	shadowZones := make(map[string][]*routeEntry)
+	conflictingPrefixes := make(map[string]bool)
+	prefixTypes := make(map[string]map[string]bool)
+
+	for _, r := range *a.routes {
+		base := a.getStaticBase(r.path)
+		if prefixTypes[base] == nil {
+			prefixTypes[base] = make(map[string]bool)
+		}
+		if strings.Contains(r.path, ":") {
+			prefixTypes[base][":"] = true
+		}
+		if strings.Contains(r.path, "*") {
+			prefixTypes[base]["*"] = true
+		}
+	}
+
+	for base, types := range prefixTypes {
+		if types[":"] && types["*"] {
+			conflictingPrefixes[base] = true
+		}
+	}
+
+	for _, r := range *a.routes {
+		isShadowed := false
+		for pref := range conflictingPrefixes {
+			if r.path == pref || strings.HasPrefix(r.path, pref+"/") {
+				shadowZones[pref] = append(shadowZones[pref], r)
+				isShadowed = true
+				break
+			}
+		}
+		if !isShadowed {
+			// RUTA SEGURA: Registro nativo. wrap ahora recibe el puntero al entry.
+			a.instance.Add(r.method, r.path, a.wrap(r))
+		}
+	}
+
+	for prefix, routes := range shadowZones {
+		a.deployShadowRouter(prefix, routes)
+	}
+}
+
+func (a *EchoAdapter) deployShadowRouter(prefix string, routes []*routeEntry) {
+	sort.SliceStable(routes, func(i, j int) bool {
+		return a.getRouteScore(routes[i].path) < a.getRouteScore(routes[j].path)
+	})
+
+	for _, r := range routes {
+		r.regex, r.wildcardName = a.buildRegex(r.path)
+	}
+
+	a.instance.Any(prefix+"/*", func(c *echo.Context) error {
+		reqPath := c.Request().URL.Path
+		method := c.Request().Method
+		cacheKey := method + "|" + reqPath
+
+		// 1. Búsqueda en Caché
+		if cached, ok := a.shadowCache.Load(cacheKey); ok {
+			return a.wrap(cached.(*routeEntry))(c)
+		}
+
+		// 2. Búsqueda Lineal
+		for _, r := range routes {
+			if r.method != method {
+				continue
+			}
+			if r.regex.MatchString(reqPath) {
+				// Gestión atómica del caché
+				if atomic.AddInt32(&a.shadowCacheSize, 1) > int32(a.maxCacheSize) {
+					a.shadowCache = &sync.Map{}
+					atomic.StoreInt32(&a.shadowCacheSize, 0)
+				}
+				a.shadowCache.Store(cacheKey, r)
+
+				return a.wrap(r)(c)
+			}
+		}
+		return echo.ErrNotFound
+	})
+}
+
+func (a *EchoAdapter) wrap(re *routeEntry) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		r := c.Request()
+		state, _ := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
+
+		newParams := make(map[string]string)
+		for k, v := range state.Params {
+			newParams[k] = v
+		}
+
+		// 1. Sincronización Nativa (Echo PathValues)
+		for _, p := range c.PathValues() {
+			newParams[p.Name] = p.Value
+		}
+
+		// 2. Sincronización Shadow (Regex)
+		// Si el entry tiene regex, significa que estamos en una zona de conflicto
+		if re.regex != nil {
+			reqPath := r.URL.Path
+			matches := re.regex.FindStringSubmatch(reqPath)
+			names := re.regex.SubexpNames()
+
+			for i, name := range names {
+				if i != 0 && name != "" && i < len(matches) {
+					// Revertimos la protección de puntos: _DOT_ -> .
+					realName := strings.ReplaceAll(name, "_DOT_", ".")
+					newParams[realName] = matches[i]
+				}
+			}
+
+			// Mapeo de Wildcards para consistencia en Transwarp
+			if re.wildcardName != "" {
+				val := newParams[re.wildcardName]
+				newParams["*"] = val
+				newParams["path"] = val
+			}
+		}
+
+		// 3. Inyección de Estado Consolidado
+		newState := &adapter.TranswarpState{
+			Params: newParams,
+			Body:   state.Body,
+		}
+		ctx := context.WithValue(r.Context(), router.StateKey, newState)
+
+		// 4. Ejecución de la "Cebolla" (Manual Onion)
+		// Construimos la cadena de middlewares y el handler final
+		var finalHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			re.h(w, req)
+		})
+
+		for i := len(re.mws) - 1; i >= 0; i-- {
+			finalHandler = re.mws[i](finalHandler)
+		}
+
+		finalHandler.ServeHTTP(c.Response(), r.WithContext(ctx))
+		return nil
+	}
+}
+
+func (a *EchoAdapter) buildRegex(path string) (*regexp.Regexp, string) {
+	wildcardName := ""
+	// Usamos un placeholder temporal para evitar que QuoteMeta escape nuestros tokens
+	p := strings.ReplaceAll(path, ":", "__P__")
+	p = strings.ReplaceAll(p, "*", "__W__")
+	p = regexp.QuoteMeta(p)
+
+	// Soportamos caracteres alfanuméricos y puntos en el nombre del parámetro
+	p = regexp.MustCompile(`__P__([a-zA-Z0-9_.]+)`).ReplaceAllStringFunc(p, func(m string) string {
+		name := strings.TrimPrefix(m, "__P__")
+		// Go Regex no permite puntos en nombres de grupos. Los normalizamos.
+		safeName := strings.ReplaceAll(name, ".", "_DOT_")
+		return fmt.Sprintf(`(?P<%s>[^/]+)`, safeName)
+	})
+
+	p = regexp.MustCompile(`__W__([a-zA-Z0-9_]*)`).ReplaceAllStringFunc(p, func(m string) string {
+		name := strings.TrimPrefix(m, "__W__")
+		if name == "" {
+			name = "any"
+		}
+		wildcardName = name
+		return fmt.Sprintf(`(?P<%s>.*)`, name)
+	})
+
+	return regexp.MustCompile("^" + p + "$"), wildcardName
+}
+
+func (a *EchoAdapter) getStaticBase(path string) string {
+	parts := strings.Split(path, "/")
+	for i, p := range parts {
+		if strings.HasPrefix(p, ":") || strings.HasPrefix(p, "*") {
+			if i == 0 {
+				return "/"
+			}
+			return strings.Join(parts[:i], "/")
+		}
+	}
+	return "/"
+}
+
+func (a *EchoAdapter) getRouteScore(path string) int {
+	if strings.Contains(path, "*") {
+		return 3
+	}
+	if strings.Contains(path, ":") {
+		return 2
+	}
+	return 1
+}
+
+func (a *EchoAdapter) joinPaths(base, next string) string {
+	if next == "" {
+		return "/" + strings.Trim(base, "/")
+	}
+	return strings.TrimSuffix(base, "/") + "/" + strings.TrimPrefix(next, "/")
+}
+
+func (a *EchoAdapter) register(m, p string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	full := a.joinPaths(a.prefix, p)
+	// Registramos la ruta TAL CUAL, permitiendo que Echo v5 maneje sus tokens nativos
+	*a.routes = append(*a.routes, &routeEntry{
+		method: m,
+		path:   full,
+		h:      h,
+		mws:    append(a.middlewares, mws...),
+	})
+}
+
+func (a *EchoAdapter) GET(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register(http.MethodGet, p, h, m...)
+}
+func (a *EchoAdapter) POST(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register(http.MethodPost, p, h, m...)
+}
+func (a *EchoAdapter) PUT(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register("PUT", p, h, m...)
+}
+func (a *EchoAdapter) DELETE(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register("DELETE", p, h, m...)
+}
+func (a *EchoAdapter) Engine() any { return a.instance }
+
+func (a *EchoAdapter) cleanPathForEcho(path string) string {
+	segments := strings.Split(path, "/")
+	for i, seg := range segments {
+		if strings.HasPrefix(seg, ":") {
+			// Transformamos :id.json -> :id
+			if dotIdx := strings.Index(seg, "."); dotIdx != -1 {
+				segments[i] = seg[:dotIdx]
+			}
+		}
+	}
+	return strings.Join(segments, "/")
+}
+
+// func (a *EchoAdapter) dispatchShadow(c *echo.Context, r *routeEntry, path string) error {
+// 	state, _ := c.Request().Context().Value(router.StateKey).(*adapter.TranswarpState)
+// 	matches := r.regex.FindStringSubmatch(path)
+
+// 	newParams := make(map[string]string)
+// 	for k, v := range state.Params {
+// 		newParams[k] = v
+// 	}
+
+// 	names := r.regex.SubexpNames()
+// 	for i, name := range names {
+// 		if i != 0 && name != "" && i < len(matches) {
+// 			// Revertimos la normalización: _DOT_ -> .
+// 			realName := strings.ReplaceAll(name, "_DOT_", ".")
+// 			newParams[realName] = matches[i]
+// 		}
+// 	}
+
+// 	// ... resto de la lógica de dispatch (wildcards, context injection, onion) ...
+// 	// (Asegúrate de mantener el mapeo de "*" y "path" para los wildcards)
+// 	if r.wildcardName != "" {
+// 		val := newParams[r.wildcardName]
+// 		newParams["*"] = val
+// 		newParams["path"] = val
+// 	}
+
+// 	// ... inyectar estado y llamar al handler (como tenías antes) ...
+// 	newState := &adapter.TranswarpState{Params: newParams, Body: state.Body}
+// 	ctx := context.WithValue(c.Request().Context(), router.StateKey, newState)
+
+// 	var finalHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+// 		r.h(w, req)
+// 	})
+// 	for i := len(r.mws) - 1; i >= 0; i-- {
+// 		finalHandler = r.mws[i](finalHandler)
+// 	}
+// 	finalHandler.ServeHTTP(c.Response(), c.Request().WithContext(ctx))
+// 	return nil
+// }
+
+
+
+==============================================================================
+FILE: ./adapter/echoadapter/echo_test.go
+==============================================================================
+package echoadapter_test
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/labstack/echo/v5"
+	"github.com/labstack/echo/v5/middleware"
+	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/profe-ajedrez/transwarp/adapter/echoadapter"
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+func TestEchoV5Adapter_Compliance(t *testing.T) {
+	// Esta prueba confirmará que Echo v5 se comporta como un Driver perfecto
+	adapter.RunMuxContract(t, func() router.Router {
+		return echoadapter.NewEchoAdapter()
+	})
+}
+
+func TestMuxAdapter_Contract(t *testing.T) {
+	adapter.RunRouterContract(t, func() router.Router {
+		// Usamos la config que maneja los puntos
+		return echoadapter.NewEchoAdapter()
+	})
+}
+
+func TestChiAdapter_Advanced(t *testing.T) {
+	// Ejecutamos la batería de pruebas de contrato.
+	// Cada sub-test recibe una instancia limpia del adaptador.
+	adapter.RunAdvancedRouterContract(t, func() router.Router {
+		return echoadapter.NewEchoAdapter()
+	})
+}
+
+func TestEchoAdapter_ErrorPropagation(t *testing.T) {
+	// 1. Setup
+	adapter := echoadapter.NewEchoAdapter()
+
+	// 1. Obtenemos el engine y hacemos el assertion al tipo concreto de Echo v5
+	e, ok := adapter.Engine().(*echo.Echo)
+	if !ok {
+		t.Fatal("El engine no es una instancia de Echo")
+	}
+
+	var captured error
+	// Configuramos un Error Handler personalizado en Echo para interceptar el error
+	e.HTTPErrorHandler = func(c *echo.Context, err error) {
+		captured = err
+		c.JSON(500, map[string]string{"error": err.Error()})
+	}
+
+	// 2. Definimos un Middleware Estándar (nuestro puente)
+	mwEstandar := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	// 3. Registramos una ruta que lanza un error nativo de Echo
+	// Usamos un Handler que el adaptador envuelve
+	adapter.GET("/error", func(_ http.ResponseWriter, _ *http.Request) {
+		// Simulamos que algo falló y queremos que Echo lo maneje.
+		// En una implementación real, esto podría venir de un middleware nativo de Echo
+		// que se ejecutó después de nuestro puente.
+	}, mwEstandar)
+
+	// Para forzar un error de Echo DESPUÉS de nuestro middleware,
+	// vamos a inyectar un error manualmente en la cadena de Echo.
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			err := next(c)
+			if c.Path() == "/error" {
+				return echo.NewHTTPError(http.StatusBadRequest, "error_de_prueba")
+			}
+			return err
+		}
+	})
+
+	// 4. Ejecución
+	req := httptest.NewRequest(http.MethodGet, "/error", nil)
+	rec := httptest.NewRecorder()
+	adapter.ServeHTTP(rec, req)
+
+	// 5. Verificación
+	if captured == nil {
+		t.Error("FALLO: El middleware estándar silenció (swallowed) el error de Echo.")
+	} else if captured.Error() != "code=400, message=error_de_prueba" {
+		t.Errorf("Error incorrecto: %v", captured)
+	}
+}
+
+func TestFromEcho_SuccessFlow(t *testing.T) {
+	echoMw := func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			c.Response().Header().Set("X-Echo-Bridge", "active")
+			return next(c)
+		}
+	}
+
+	twMw := echoadapter.FromEcho(echoMw)
+	finalReached := false
+	finalHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		finalReached = true
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+
+	twMw(finalHandler).ServeHTTP(w, req)
+
+	if !finalReached {
+		t.Error("El flujo no llegó al handler final de Transwarp")
+	}
+	if w.Header().Get("X-Echo-Bridge") != "active" {
+		t.Error("El middleware de Echo no aplicó los cambios en el Header")
+	}
+}
+
+func TestFromEcho_ShortCircuit(t *testing.T) {
+	echoMw := func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			// Abortamos la petición con un error 403 nativo de Echo
+			return echo.NewHTTPError(http.StatusForbidden, "acceso denegado")
+		}
+	}
+
+	twMw := echoadapter.FromEcho(echoMw)
+	finalReached := false
+	finalHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		finalReached = true
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+
+	twMw(finalHandler).ServeHTTP(w, req)
+
+	if finalReached {
+		t.Error("El short-circuit falló: se alcanzó el handler final")
+	}
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Status esperado 403, obtenido %d", w.Code)
+	}
+}
+
+func TestFromEcho_StateIntegrity(t *testing.T) {
+	// Middleware que interactúa con los valores del contexto de Echo
+	echoMw := func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			c.Set("echo_val", "foo")
+			return next(c)
+		}
+	}
+
+	twMw := echoadapter.FromEcho(echoMw)
+
+	var capturedState bool
+	finalHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verificamos que el TranswarpState siga presente en el contexto
+		_, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
+		capturedState = ok
+	})
+
+	state := &adapter.TranswarpState{Params: make(map[string]string)}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	// Uso directo de context.WithValue siguiendo tu corrección
+	ctx := context.WithValue(req.Context(), router.StateKey, state)
+	req = req.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	twMw(finalHandler).ServeHTTP(w, req)
+
+	if !capturedState {
+		t.Error("El TranswarpState se perdió al pasar por el bridge de Echo")
+	}
+}
+
+func TestFromEcho_BodyPersistence(t *testing.T) {
+	echoMw := func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			// Echo v5 leyendo el body
+			body, _ := io.ReadAll(c.Request().Body)
+			if string(body) != "payload" {
+				return echo.NewHTTPError(http.StatusBadRequest, "body invalido")
+			}
+			return next(c)
+		}
+	}
+
+	twMw := echoadapter.FromEcho(echoMw)
+
+	finalReached := false
+	finalHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Intentamos leerlo de nuevo en Transwarp
+		body, _ := io.ReadAll(r.Body)
+		if string(body) == "payload" {
+			finalReached = true
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString("payload"))
+	state := &adapter.TranswarpState{Params: make(map[string]string)}
+	ctx := context.WithValue(req.Context(), router.StateKey, state)
+	req = req.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	twMw(finalHandler).ServeHTTP(w, req)
+
+	if !finalReached {
+		t.Error("La persistencia del Body falló tras el bridge")
+	}
+}
+
+func TestFromEcho_ContextValuePropagation(t *testing.T) {
+	type ctxKey string
+	const myKey ctxKey = "user-data"
+
+	echoMw := func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			// Echo debería ver el valor del contexto original de Go
+			val := c.Request().Context().Value(myKey)
+			if val != "secret-info" {
+				return echo.NewHTTPError(http.StatusInternalServerError, "contexto perdido en Echo")
+			}
+			return next(c)
+		}
+	}
+
+	twMw := echoadapter.FromEcho(echoMw)
+	finalReached := false
+	finalHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Context().Value(myKey) == "secret-info" {
+			finalReached = true
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	ctx := context.WithValue(req.Context(), myKey, "secret-info")
+	req = req.WithContext(ctx)
+
+	twMw(finalHandler).ServeHTTP(httptest.NewRecorder(), req)
+
+	if !finalReached {
+		t.Error("El valor del contexto no sobrevivió al viaje de ida y vuelta por Echo")
+	}
+}
+
+func TestFromEcho_HeaderAndCookieSync(t *testing.T) {
+	echoMw := func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			c.SetCookie(&http.Cookie{Name: "session", Value: "12345"})
+			c.Response().Header().Set("X-Custom-Header", "Transwarp")
+			return next(c)
+		}
+	}
+
+	twMw := echoadapter.FromEcho(echoMw)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	twMw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})).ServeHTTP(w, req)
+
+	if !strings.Contains(w.Header().Get("Set-Cookie"), "session=12345") {
+		t.Error("La cookie establecida en Echo no llegó al ResponseWriter")
+	}
+	if w.Header().Get("X-Custom-Header") != "Transwarp" {
+		t.Error("El header establecido en Echo se perdió")
+	}
+}
+
+func TestFromEcho_ResponseHijacking(t *testing.T) {
+	echoMw := func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			// El middleware escribe y corta el flujo sin llamar a next
+			return c.String(http.StatusTeapot, "soy una tetera")
+		}
+	}
+
+	twMw := echoadapter.FromEcho(echoMw)
+	finalReached := false
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		finalReached = true
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	twMw(handler).ServeHTTP(w, req)
+
+	if finalReached {
+		t.Error("El flujo continuó a Transwarp a pesar de que Echo ya había respondido")
+	}
+	if w.Code != http.StatusTeapot || w.Body.String() != "soy una tetera" {
+		t.Errorf("Respuesta incorrecta. Status: %d, Body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestFromEcho_Concurrency(t *testing.T) {
+	echoMw := func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			return next(c)
+		}
+	}
+	twMw := echoadapter.FromEcho(echoMw)
+
+	const workers = 100
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			twMw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})).ServeHTTP(w, req)
+		}()
+	}
+	wg.Wait()
+}
+
+func TestFromEcho_RequestLoggerIntegration(t *testing.T) {
+	// 1. Definimos una estructura para capturar lo que el logger procese
+	var capturedStatus int
+	var capturedMethod string
+	var capturedURI string
+
+	// 2. Configuramos el RequestLogger de Echo v5
+	config := middleware.RequestLoggerConfig{
+		LogStatus: true,
+		LogMethod: true,
+		LogURI:    true,
+		// Esta es la función que Echo v5 llama al terminar la petición
+		LogValuesFunc: func(c *echo.Context, v middleware.RequestLoggerValues) error {
+			capturedStatus = v.Status
+			capturedMethod = v.Method
+			capturedURI = v.URI
+			return nil
+		},
+	}
+
+	// Creamos el middleware de Echo v5
+	echoMiddleware := middleware.RequestLoggerWithConfig(config)
+
+	// 3. Lo pasamos por nuestro bridge FromEcho
+	twMiddleware := echoadapter.FromEcho(echoMiddleware)
+
+	// 4. Handler final de Transwarp que define el status code
+	finalHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated) // 201
+		w.Write([]byte("created"))
+	})
+
+	// 5. Ejecutamos la petición
+	req := httptest.NewRequest("PUT", "/v5/resource", nil)
+	w := httptest.NewRecorder()
+
+	// Ejecutamos la cebolla
+	twMiddleware(finalHandler).ServeHTTP(w, req)
+
+	// 6. Validaciones
+	if capturedMethod != "PUT" {
+		t.Errorf("RequestLogger no capturó el método correcto. Obtenido: %s", capturedMethod)
+	}
+	if capturedURI != "/v5/resource" {
+		t.Errorf("RequestLogger no capturó la URI correcta. Obtenido: %s", capturedURI)
+	}
+	if capturedStatus != http.StatusCreated {
+		t.Errorf("RequestLogger no capturó el status del handler final. Esperado: 201, Obtenido: %d", capturedStatus)
+	}
+}
+
+
+
+==============================================================================
+FILE: ./adapter/echoadapter/echo_bench_test.go
+==============================================================================
+package echoadapter
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/labstack/echo/v5"
+	"github.com/profe-ajedrez/transwarp"
+	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+func BenchmarkEcho(b *testing.B) {
+	adapter.RunSuiteBenchmarks(b, func() router.Router {
+		return NewEchoAdapter()
+	})
+}
+
+// 1. Middleware Nativo de Go
+func nativeMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Middleware-Type", "native")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// 2. Middleware de Echo v5
+func echoMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		c.Response().Header().Set("X-Middleware-Type", "echo")
+		return next(c)
+	}
+}
+
+func BenchmarkMiddlewareOverhead(b *testing.B) {
+	finalHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Adaptamos el middleware de Echo usando nuestra función
+	transwarpEchoMiddleware := FromEcho(echoMiddleware)
+
+	b.Run("Native_Go_Middleware", func(b *testing.B) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		h := nativeMiddleware(finalHandler)
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			h.ServeHTTP(w, req)
+		}
+	})
+
+	b.Run("FromEcho_Bridge_Middleware", func(b *testing.B) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		h := transwarpEchoMiddleware(finalHandler)
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			h.ServeHTTP(w, req)
+		}
+	})
+}
+
+func BenchmarkEchoV5_Native(b *testing.B) {
+	e := echo.New()
+	e.GET("/bench", func(c *echo.Context) error {
+		return c.String(http.StatusOK, "ok")
+	})
+	req := httptest.NewRequest(http.MethodGet, "/bench", nil)
+	w := httptest.NewRecorder()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		e.ServeHTTP(w, req)
+	}
+}
+
+func BenchmarkEchoV5_Transwarp(b *testing.B) {
+	tw := transwarp.New(NewEchoAdapter())
+	tw.GET("/bench", transwarpHandler)
+	req := httptest.NewRequest(http.MethodGet, "/bench", nil)
+	w := httptest.NewRecorder()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tw.ServeHTTP(w, req)
+	}
+}
+
+func transwarpHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
+
+
+==============================================================================
+FILE: ./adapter/echoadapter/middleware_adapter.go
+==============================================================================
+package echoadapter
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"net/http"
+
+	"github.com/labstack/echo/v5"
+	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+func FromEcho(echoMw echo.MiddlewareFunc) func(http.Handler) http.Handler {
+	e := echo.New()
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// 1. Recuperar el estado
+			state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
+			if !ok {
+				state = &adapter.TranswarpState{Params: make(map[string]string)}
+				r = r.WithContext(context.WithValue(r.Context(), router.StateKey, state))
+			}
+
+			// 2. SEGURIDAD: Lazy Body dentro del bridge
+			// Si el estado no tiene el body pero el request sí, lo capturamos antes
+			// de que el middleware de Echo lo consuma.
+			if state.Body == nil && r.Body != nil && r.Body != http.NoBody && r.Method != http.MethodGet {
+				body, _ := io.ReadAll(r.Body)
+				state.Body = body
+				r.Body = io.NopCloser(bytes.NewReader(body))
+			}
+
+			bridgeHandler := func(c *echo.Context) error {
+				currentReq := c.Request()
+
+				// Sincronizar parámetros (por si el middleware de Echo los alteró)
+				for _, p := range c.PathValues() {
+					state.Params[p.Name] = p.Value
+				}
+
+				// 3. RE-INYECCIÓN: Restaurar el stream para el siguiente handler
+				if state.Body != nil {
+					currentReq.Body = io.NopCloser(bytes.NewReader(state.Body))
+				}
+
+				if n, ok := currentReq.Context().Value(router.NextKey).(http.Handler); ok {
+					n.ServeHTTP(c.Response(), currentReq)
+				}
+				return nil
+			}
+
+			// Configuración de Echo Context
+			c := e.NewContext(r, w)
+			ctx := context.WithValue(r.Context(), router.NextKey, next)
+			c.SetRequest(r.WithContext(ctx))
+
+			if err := echoMw(bridgeHandler)(c); err != nil {
+				e.HTTPErrorHandler(c, err)
+			}
+		})
+	}
+}
+
+
+
+==============================================================================
+FILE: ./adapter/echoadapter/echo_smoke_test.go
+==============================================================================
+package echoadapter_test
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/profe-ajedrez/transwarp/adapter/echoadapter"
+	"github.com/profe-ajedrez/transwarp/server"
+)
+
+func TestTranswarp_FullStack_SmokeTest_Echo(t *testing.T) {
+	// 1. Inicializar el adaptador de Echo v5
+	adapter := echoadapter.NewEchoAdapter()
+
+	// 2. Registrar una ruta compleja (con parámetros y extensiones)
+	// Probamos la capacidad del adaptador de manejar el estado y parámetros
+	adapter.GET("/api/v1/users/:id.json", func(w http.ResponseWriter, r *http.Request) {
+		// Recuperamos el parámetro usando la abstracción de Transwarp
+		id := adapter.Param(r, "id")
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok","id":"` + id + `"}`))
+	})
+
+	// 3. Configurar e iniciar el servidor en un puerto aleatorio (:0)
+	cfg := server.Config{
+		Addr:         "127.0.0.1:0",
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
+	}
+	srv := server.New(cfg, adapter)
+
+	// Canal para capturar errores del servidor
+	srvErr := make(chan error, 1)
+	go func() {
+		srvErr <- srv.Start()
+	}()
+
+	// 4. Obtener la dirección real asignada
+	// Gracias al srv.ready chan, esto espera a que el listener esté vivo
+	addr := srv.Addr()
+
+	// 5. Realizar la petición HTTP real
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + addr + "/api/v1/users/admin.json")
+	if err != nil {
+		t.Fatalf("Error al realizar la petición: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// 6. Validar la respuesta
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Status code esperado 200, obtenido %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	expectedBody := `{"status":"ok","id":"admin.json"}`
+	if string(body) != expectedBody {
+		t.Errorf("Cuerpo esperado %s, obtenido %s", expectedBody, string(body))
+	}
+
+	// 7. Test de Graceful Shutdown (Cierre ordenado)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Errorf("Error durante el Shutdown: %v", err)
+	}
+
+	// Verificamos que el servidor se detuvo sin errores extraños
+	select {
+	case err := <-srvErr:
+		if err != nil {
+			t.Errorf("El servidor falló inesperadamente: %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("El servidor tardó demasiado en cerrarse")
+	}
+}
+
+
+
+==============================================================================
+FILE: ./adapter/chiadapter/chi.go
+==============================================================================
+package chiadapter
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"net/http"
+	"strings"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+type ChiAdapter struct {
+	mux         *chi.Mux
+	prefix      string
+	middlewares []func(http.Handler) http.Handler // Middlewares locales al adaptador/grupo
+}
+
+func NewChiAdapter() *ChiAdapter {
+	return &ChiAdapter{
+		mux: chi.NewRouter(),
+	}
+}
+
+// --- Implementación de RouterAdapter ---
+
+func (a *ChiAdapter) Param(r *http.Request, key string) string {
+	state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
+	if !ok || state.Params == nil {
+		return ""
+	}
+	if val, ok := state.Params[key]; ok {
+		return val
+	}
+	// Fallback Greedy
+	cleanKey := key
+	if dotIdx := strings.Index(key, "."); dotIdx != -1 {
+		cleanKey = key[:dotIdx]
+		if val, ok := state.Params[cleanKey]; ok {
+			return val
+		}
+	}
+	return ""
+}
+
+func (a *ChiAdapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	state := &adapter.TranswarpState{Params: make(map[string]string)}
+
+	// Lazy Body inicial
+	if r.Body != nil && r.Body != http.NoBody && r.Method != http.MethodGet {
+		body, _ := io.ReadAll(r.Body)
+		state.Body = body
+		r.Body = io.NopCloser(bytes.NewReader(body))
+	}
+
+	ctx := context.WithValue(r.Context(), router.StateKey, state)
+	a.mux.ServeHTTP(w, r.WithContext(ctx))
+}
+
+func (a *ChiAdapter) Use(mws ...func(http.Handler) http.Handler) {
+	// IMPORTANTE: Guardamos localmente en lugar de usar a.mux.Use()
+	// para mantener el aislamiento de grupos.
+	a.middlewares = append(a.middlewares, mws...)
+}
+
+func (a *ChiAdapter) Group(prefix string) router.Router {
+	// Clonamos los middlewares actuales para el nuevo grupo
+	mwsCopy := make([]func(http.Handler) http.Handler, len(a.middlewares))
+	copy(mwsCopy, a.middlewares)
+
+	return &ChiAdapter{
+		mux:         a.mux,
+		prefix:      a.joinPaths(a.prefix, prefix),
+		middlewares: mwsCopy,
+	}
+}
+
+// --- Registro y Construcción de la Cebolla ---
+
+func (a *ChiAdapter) register(method, path string, h http.HandlerFunc, routeMws ...func(http.Handler) http.Handler) {
+	chiPath, wildcardName := a.transformPathForChi(path)
+	fullPath := a.joinPaths(a.prefix, chiPath)
+
+	// Construimos la cebolla de middlewares:
+	// 1. Middlewares de la ruta específica (los más internos)
+	// 2. Middlewares del adaptador/grupo (los más externos)
+	var finalHandler http.Handler = h
+
+	// Primero los de la ruta
+	for i := len(routeMws) - 1; i >= 0; i-- {
+		finalHandler = routeMws[i](finalHandler)
+	}
+
+	// Luego los del grupo/globales
+	for i := len(a.middlewares) - 1; i >= 0; i-- {
+		finalHandler = a.middlewares[i](finalHandler)
+	}
+
+	a.mux.Method(method, fullPath, a.wrapState(finalHandler, wildcardName))
+}
+
+func (a *ChiAdapter) wrapState(onion http.Handler, wildcardName string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
+		if !ok {
+			state = &adapter.TranswarpState{Params: make(map[string]string)}
+		}
+
+		// Inmutabilidad de parámetros
+		newParams := make(map[string]string, len(state.Params))
+		for k, v := range state.Params {
+			newParams[k] = v
+		}
+
+		// Sincronizar parámetros de Chi
+		rctx := chi.RouteContext(r.Context())
+		if rctx != nil {
+			for i, key := range rctx.URLParams.Keys {
+				val := rctx.URLParams.Values[i]
+				if key == "*" && wildcardName != "" {
+					newParams[wildcardName] = val
+					newParams["*"] = val
+				} else {
+					newParams[key] = val
+				}
+			}
+		}
+
+		// Sincronización de Body
+		var body []byte = state.Body
+		if body == nil && r.Body != nil && r.Body != http.NoBody {
+			body, _ = io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+
+		newState := &adapter.TranswarpState{Params: newParams, Body: body}
+		ctx := context.WithValue(r.Context(), router.StateKey, newState)
+		onion.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// --- Helpers HTTP ---
+
+func (a *ChiAdapter) GET(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register(http.MethodGet, p, h, m...)
+}
+func (a *ChiAdapter) POST(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register(http.MethodPost, p, h, m...)
+}
+func (a *ChiAdapter) PUT(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register(http.MethodPut, p, h, m...)
+}
+func (a *ChiAdapter) DELETE(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register(http.MethodDelete, p, h, m...)
+}
+
+func (a *ChiAdapter) Engine() any { return a.mux }
+
+func (a *ChiAdapter) joinPaths(base, next string) string {
+	if next == "" {
+		return "/" + strings.Trim(base, "/")
+	}
+	return strings.TrimSuffix(base, "/") + "/" + strings.TrimPrefix(next, "/")
+}
+
+func (a *ChiAdapter) transformPathForChi(path string) (string, string) {
+	wildcardName := ""
+	if idx := strings.Index(path, "*"); idx != -1 {
+		wildcardName = path[idx+1:]
+		if wildcardName == "" {
+			wildcardName = "any"
+		}
+		path = path[:idx] + "*"
+	}
+
+	segments := strings.Split(path, "/")
+	for i, seg := range segments {
+		if strings.HasPrefix(seg, ":") {
+			paramPart := seg[1:]
+			if dotIdx := strings.Index(paramPart, "."); dotIdx != -1 {
+				paramPart = paramPart[:dotIdx]
+			}
+			segments[i] = "{" + paramPart + "}"
+		}
+	}
+	return strings.Join(segments, "/"), wildcardName
+}
+
+
+
+==============================================================================
+FILE: ./adapter/chiadapter/chi_test.go
+==============================================================================
+package chiadapter_test
+
+import (
+	"testing"
+
+	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/profe-ajedrez/transwarp/adapter/chiadapter"
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+func TestChiAdapter_Compliance(t *testing.T) {
+	// Ejecutamos la batería de pruebas de contrato.
+	// Cada sub-test recibe una instancia limpia del adaptador.
+	adapter.RunMuxContract(t, func() router.Router {
+		return chiadapter.NewChiAdapter()
+	})
+}
+
+func TestMuxAdapter_Contract(t *testing.T) {
+	adapter.RunRouterContract(t, func() router.Router {
+		// Usamos la config que maneja los puntos
+		return chiadapter.NewChiAdapter()
+	})
+}
+
+func TestChiAdapter_Advanced(t *testing.T) {
+	// Ejecutamos la batería de pruebas de contrato.
+	// Cada sub-test recibe una instancia limpia del adaptador.
+	adapter.RunAdvancedRouterContract(t, func() router.Router {
+		return chiadapter.NewChiAdapter()
+	})
+}
+
+
+
+==============================================================================
+FILE: ./adapter/chiadapter/chi_bench_test.go
+==============================================================================
+package chiadapter
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/profe-ajedrez/transwarp"
+	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+func BenchmarkChi(b *testing.B) {
+	adapter.RunSuiteBenchmarks(b, func() router.Router {
+		return NewChiAdapter()
+	})
+}
+
+func BenchmarkChi_Native(b *testing.B) {
+
+	r := chi.NewRouter()
+	r.Get("/bench", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	})
+	req := httptest.NewRequest(http.MethodGet, "/bench", nil)
+	w := httptest.NewRecorder()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		r.ServeHTTP(w, req)
+	}
+}
+
+func BenchmarkChi_Transwarp(b *testing.B) {
+	tw := transwarp.New(NewChiAdapter())
+	tw.GET("/bench", transwarpHandler)
+	req := httptest.NewRequest(http.MethodGet, "/bench", nil)
+	w := httptest.NewRecorder()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tw.ServeHTTP(w, req)
+	}
+}
+
+func transwarpHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
+
+
+==============================================================================
+FILE: ./adapter/chiadapter/chi_smoke_test.go
+==============================================================================
+package chiadapter_test
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/profe-ajedrez/transwarp/adapter/chiadapter"
+	"github.com/profe-ajedrez/transwarp/server"
+)
+
+func TestTranswarp_Chi_FullStack_SmokeTest(t *testing.T) {
+	// 1. Inicializar el adaptador de Chi
+	adapter := chiadapter.NewChiAdapter()
+
+	// 2. Definir una ruta con extensión
+	// Chi transformará :id.json -> {id} internamente.
+	// Al pedir /admin.json, {id} capturará "admin.json"
+	adapter.GET("/api/v1/users/:id.json", func(w http.ResponseWriter, r *http.Request) {
+		id := adapter.Param(r, "id")
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok","id":"` + id + `"}`))
+	})
+
+	// 3. Configuración y arranque del servidor
+	srv := server.New(server.Config{Addr: "127.0.0.1:0"}, adapter)
+
+	srvErr := make(chan error, 1)
+	go func() {
+		srvErr <- srv.Start()
+	}()
+
+	addr := srv.Addr()
+
+	// 4. Realizar la petición real
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + addr + "/api/v1/users/admin.json")
+	if err != nil {
+		t.Fatalf("Error en la petición: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// 5. Validar la consistencia (esperamos el valor completo admin.json)
+	body, _ := io.ReadAll(resp.Body)
+	expectedBody := `{"status":"ok","id":"admin.json"}`
+	if string(body) != expectedBody {
+		t.Errorf("Chi falló en la consistencia de parámetros. Esperado %s, obtenido %s", expectedBody, string(body))
+	}
+
+	// 6. Test de Middleware (Cebolla)
+	// Verificamos que los middlewares de Chi inyectados vía adapter funcionen
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Errorf("Error en Shutdown: %v", err)
+	}
+
+	select {
+	case err := <-srvErr:
+		if err != nil {
+			t.Errorf("Servidor terminó con error: %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("El servidor de Chi no se detuvo a tiempo")
+	}
+}
+
+
+
+==============================================================================
+FILE: ./adapter/adapter_bench.go
+==============================================================================
+package adapter
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+// RunSuiteBenchmarks corre la artillería pesada de rendimiento
+func RunSuiteBenchmarks(b *testing.B, factory func() router.Router) {
+
+	// 1. Benchmark: Ruta Estática Simple (Baseline)
+	b.Run("Static/Simple", func(b *testing.B) {
+		adp := factory()
+		adp.GET("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			adp.ServeHTTP(httptest.NewRecorder(), req)
+		}
+	})
+
+	// 2. Benchmark: Parámetros Dinámicos (:id)
+	// Aquí medimos el costo de extraer el valor y meterlo en el Context
+	b.Run("Param/Single", func(b *testing.B) {
+		adp := factory()
+		adp.GET("/user/:id", func(w http.ResponseWriter, r *http.Request) {
+			_ = adp.Param(r, "id")
+		})
+		req := httptest.NewRequest(http.MethodGet, "/user/12345", nil)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			adp.ServeHTTP(httptest.NewRecorder(), req)
+		}
+	})
+
+	// 3. Benchmark: "The Onion" (5 niveles de Middleware)
+	// Medimos la latencia de recursión y el encadenamiento de handlers
+	b.Run("Middleware/DeepOnion", func(b *testing.B) {
+		adp := factory()
+		mw := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r)
+			})
+		}
+
+		g := adp.Group("/g1")
+		g.Use(mw)
+		g2 := g.Group("/g2")
+		g2.Use(mw)
+		g3 := g2.Group("/g3")
+		g3.Use(mw)
+
+		g3.GET("/end", func(w http.ResponseWriter, r *http.Request) {}, mw, mw)
+
+		req := httptest.NewRequest(http.MethodGet, "/g1/g2/g3/end", nil)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			adp.ServeHTTP(httptest.NewRecorder(), req)
+		}
+	})
+}
+
+
+
+==============================================================================
+FILE: ./adapter/state.go
+==============================================================================
+package adapter
+
+import "strings"
+
+// TranswarpState centraliza los datos de la petición para evitar múltiples alocaciones de contexto.
+type TranswarpState struct {
+	Params map[string]string
+	Body   []byte
+}
+
+// clone garantiza memoria fresca para evitar Race Conditions.
+func Clone(s string) string {
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(s)
+	return b.String()
+}
+
+
+
+==============================================================================
+FILE: ./adapter/fiberadapter/fiber.go
+==============================================================================
+package fiberadapter
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"net/http"
+	"sort"
+	"strings"
+	"sync"
+
+	"github.com/gofiber/fiber/v3"
+	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/profe-ajedrez/transwarp/router"
+	"github.com/valyala/fasthttp"
+)
+
+type routeEntry struct {
+	method      string
+	fullPath    string
+	h           http.HandlerFunc
+	allHandlers []func(http.Handler) http.Handler
+}
+
+type FiberAdapter struct {
+	app         *fiber.App
+	prefix      string
+	middlewares []func(http.Handler) http.Handler
+	routes      *[]*routeEntry
+	once        *sync.Once
+	fastHandler fasthttp.RequestHandler
+}
+
+func NewFiberAdapter() *FiberAdapter {
+	app := fiber.New(fiber.Config{Immutable: true})
+	return &FiberAdapter{
+		app:         app,
+		prefix:      "",
+		middlewares: []func(http.Handler) http.Handler{},
+		routes:      &[]*routeEntry{},
+		once:        &sync.Once{},
+	}
+}
+
+func (a *FiberAdapter) Group(prefix string) router.Router {
+	cleanPrefix := a.prefix + "/" + strings.Trim(prefix, "/")
+	cleanPrefix = strings.ReplaceAll(cleanPrefix, "//", "/")
+	mwsCopy := make([]func(http.Handler) http.Handler, len(a.middlewares))
+	copy(mwsCopy, a.middlewares)
+
+	return &FiberAdapter{
+		app:         a.app,
+		prefix:      strings.TrimSuffix(cleanPrefix, "/"),
+		middlewares: mwsCopy,
+		routes:      a.routes,
+		once:        a.once,
+	}
+}
+
+func (a *FiberAdapter) registerAll() {
+	sort.SliceStable(*a.routes, func(i, j int) bool {
+		return a.getRouteScore((*a.routes)[i].fullPath) < a.getRouteScore((*a.routes)[j].fullPath)
+	})
+
+	for _, r := range *a.routes {
+		fiberPath := a.transformPathForFiber(r.fullPath)
+		var finalHandler http.Handler = http.HandlerFunc(r.h)
+		for i := len(r.allHandlers) - 1; i >= 0; i-- {
+			finalHandler = r.allHandlers[i](finalHandler)
+		}
+		a.app.Add([]string{r.method}, fiberPath, a.wrapAtomic(finalHandler))
+	}
+	a.fastHandler = a.app.Handler()
+}
+
+// Pool global para el adaptador principal
+var adapterFctxPool = sync.Pool{
+	New: func() any { return new(fasthttp.RequestCtx) },
+}
+
+func (a *FiberAdapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	a.once.Do(func() { a.registerAll() })
+
+	fctx := adapterFctxPool.Get().(*fasthttp.RequestCtx)
+
+	// Limpieza de seguridad antes de devolver al pool
+	defer func() {
+		fctx.SetUserValue("tw_ctx", nil)
+		fctx.SetUserValue("tw_writer", nil)
+		adapterFctxPool.Put(fctx)
+	}()
+
+	fctx.Request.Reset()
+	fctx.Response.Reset()
+
+	// Es vital pasar el contexto original de Go
+	fctx.SetUserValue("tw_ctx", r.Context())
+	fctx.SetUserValue("tw_writer", w)
+
+	// Fiber v3 necesita que el URI esté bien formado para el ruteo
+	fctx.Request.SetRequestURI(r.URL.RequestURI())
+	fctx.Request.Header.SetMethod(r.Method)
+	fctx.Request.SetHost(r.Host)
+
+	// Copiamos el cuerpo para que Fiber pueda leerlo
+	if r.Body != nil {
+		body, _ := io.ReadAll(r.Body)
+		fctx.Request.SetBody(body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+	}
+
+	fctx.Request.SetRequestURI(r.URL.RequestURI())
+
+	a.fastHandler(fctx)
+}
+
+func (a *FiberAdapter) wrapAtomic(onion http.Handler) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		ctxVal := c.Locals("tw_ctx")
+		ctx, ok := ctxVal.(context.Context)
+		if !ok || ctx == nil {
+			ctx = context.Background()
+		}
+		w, _ := c.Locals("tw_writer").(http.ResponseWriter)
+
+		// 1. Crear estado único. c.Body() en v3 es seguro con Immutable: true.
+		state := &adapter.TranswarpState{
+			Params: syncParams(c, ctx),
+			Body:   c.Body(),
+		}
+
+		// 2. Un solo WithValue para toda la petición
+		ctx = context.WithValue(ctx, router.StateKey, state)
+
+		req, _ := http.NewRequestWithContext(
+			ctx,
+			clone(c.Method()),
+			clone(c.OriginalURL()),
+			bytes.NewReader(state.Body),
+		)
+
+		// Corrección: Acceso al campo Header (fasthttp.RequestHeader)
+		c.Request().Header.VisitAll(func(k, v []byte) {
+			req.Header.Add(clone(string(k)), clone(string(v)))
+		})
+
+		onion.ServeHTTP(w, req)
+		return nil
+	}
+}
+
+type directResponseWriter struct {
+	w http.ResponseWriter
+}
+
+func (d *directResponseWriter) Header() http.Header         { return d.w.Header() }
+func (d *directResponseWriter) Write(p []byte) (int, error) { return d.w.Write(p) }
+func (d *directResponseWriter) WriteHeader(s int)           { d.w.WriteHeader(s) }
+
+// func (a *FiberAdapter) transformPathForFiber(path string) string {
+// 	if strings.Contains(path, "*") {
+// 		return path[:strings.Index(path, "*")+1]
+// 	}
+// 	parts := strings.Split(path, "/")
+// 	for i, part := range parts {
+// 		if strings.HasPrefix(part, ":") {
+// 			if dotIdx := strings.Index(part, "."); dotIdx != -1 {
+// 				parts[i] = part[:dotIdx]
+// 			}
+// 		}
+// 	}
+// 	return strings.Join(parts, "/")
+// }
+
+func (a *FiberAdapter) transformPathForFiber(path string) string {
+	segments := strings.Split(path, "/")
+	for i, seg := range segments {
+		if strings.HasPrefix(seg, ":") {
+			// Limpiamos extensiones: :id.json -> :id
+			if dotIdx := strings.Index(seg, "."); dotIdx != -1 {
+				segments[i] = seg[:dotIdx]
+			}
+		} else if strings.HasPrefix(seg, "*") {
+			// Fiber v3 solo entiende '*' puro.
+			// Convertimos '*path' en '*' y terminamos (el wildcard siempre es el final).
+			segments[i] = "*"
+			return strings.Join(segments[:i+1], "/")
+		}
+	}
+	return strings.Join(segments, "/")
+}
+
+// func (a *FiberAdapter) Param(r *http.Request, key string) string {
+// 	state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
+// 	if !ok || state.Params == nil {
+// 		return ""
+// 	}
+
+// 	if val, ok := state.Params[key]; ok {
+// 		return val
+// 	}
+
+// 	// Fallback para extensiones (ej: :id -> id.json)
+// 	cleanKey := key
+// 	if dotIdx := strings.Index(key, "."); dotIdx != -1 {
+// 		cleanKey = key[:dotIdx]
+// 	}
+// 	return state.Params[cleanKey]
+// }
+
+func (a *FiberAdapter) Param(r *http.Request, key string) string {
+	state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
+	if !ok || state.Params == nil {
+		return ""
+	}
+
+	// 1. Intento con la llave exacta (ej: "id")
+	if val, ok := state.Params[key]; ok {
+		return val
+	}
+
+	// 2. FALLBACK CRÍTICO: Si la llave pedida es un wildcard (o se llama "path", "*", "any"),
+	// buscamos en la llave genérica "*" que es donde Fiber guarda el catch-all.
+	if val, ok := state.Params["*"]; ok {
+		return val
+	}
+
+	// 3. Fallback para extensiones (id.json -> id)
+	cleanKey := key
+	if dotIdx := strings.Index(key, "."); dotIdx != -1 {
+		cleanKey = key[:dotIdx]
+		return state.Params[cleanKey]
+	}
+
+	return ""
+}
+
+func (a *FiberAdapter) getRouteScore(path string) int {
+	if strings.Contains(path, "*") {
+		return 3
+	}
+	if strings.Contains(path, ":") {
+		return 2
+	}
+	return 1
+}
+
+func (a *FiberAdapter) Use(mws ...func(http.Handler) http.Handler) {
+	a.middlewares = append(a.middlewares, mws...)
+}
+func (a *FiberAdapter) GET(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register(http.MethodGet, p, h, m...)
+}
+func (a *FiberAdapter) POST(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register(http.MethodPost, p, h, m...)
+}
+func (a *FiberAdapter) PUT(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register("PUT", p, h, m...)
+}
+func (a *FiberAdapter) DELETE(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register("DELETE", p, h, m...)
+}
+func (a *FiberAdapter) register(m, p string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	fullPath := a.prefix + "/" + strings.TrimPrefix(p, "/")
+	fullPath = strings.ReplaceAll(fullPath, "//", "/")
+	stack := make([]func(http.Handler) http.Handler, len(a.middlewares))
+	copy(stack, a.middlewares)
+	stack = append(stack, mws...)
+	*a.routes = append(*a.routes, &routeEntry{method: m, fullPath: fullPath, h: h, allHandlers: stack})
+}
+func (a *FiberAdapter) Engine() any { return a.app }
+
+
+
+==============================================================================
+FILE: ./adapter/fiberadapter/fiber_bench_test.go
+==============================================================================
+package fiberadapter
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/gofiber/fiber/v3"
+	"github.com/profe-ajedrez/transwarp"
+	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/profe-ajedrez/transwarp/router"
+	"github.com/valyala/fasthttp"
+)
+
+func BenchmarkFiber(b *testing.B) {
+	adapter.RunSuiteBenchmarks(b, func() router.Router {
+		return NewFiberAdapter()
+	})
+}
+
+// Handler final ultra-rápido
+func fastHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+}
+
+// 1. Benchmark: Middleware nativo de Go (Línea base)
+func BenchmarkMiddleware_NativeGo(b *testing.B) {
+	tw := transwarp.New(NewFiberAdapter())
+
+	// Middleware de Go que no hace nada
+	tw.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r)
+		})
+	})
+
+	tw.GET("/bench", fastHandler)
+	req := httptest.NewRequest(http.MethodGet, "/bench", nil)
+	w := httptest.NewRecorder()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tw.ServeHTTP(w, req)
+	}
+}
+
+// 2. Benchmark: Middleware de Fiber via FromFiber (El "Impuesto")
+func BenchmarkMiddleware_FromFiber(b *testing.B) {
+	tw := transwarp.New(NewFiberAdapter())
+
+	// Middleware de Fiber que no hace nada
+	fiberMw := func(c fiber.Ctx) error {
+		return c.Next()
+	}
+
+	tw.Use(FromFiber(fiberMw))
+
+	tw.GET("/bench", fastHandler)
+	req := httptest.NewRequest(http.MethodGet, "/bench", nil)
+	w := httptest.NewRecorder()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tw.ServeHTTP(w, req)
+	}
+}
+
+func BenchmarkMiddleware_FromFiber_DeepStack(b *testing.B) {
+	tw := transwarp.New(NewFiberAdapter())
+
+	fiberMw := func(c fiber.Ctx) error {
+		return c.Next()
+	}
+
+	// Añadimos 5 capas de Fiber
+	for i := 0; i < 5; i++ {
+		tw.Use(FromFiber(fiberMw))
+	}
+
+	tw.GET("/bench", fastHandler)
+	req := httptest.NewRequest(http.MethodGet, "/bench", nil)
+	w := httptest.NewRecorder()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tw.ServeHTTP(w, req)
+	}
+}
+
+func BenchmarkFiberV3_Native(b *testing.B) {
+	app := fiber.New()
+	app.Get("/bench", func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	// Usamos el motor directo para una comparativa justa contra fiberadapter
+	handler := app.Handler()
+	// Simulamos el contexto de fasthttp
+	fctx := new(fasthttp.RequestCtx)
+	fctx.Request.Header.SetMethod(http.MethodGet)
+	fctx.Request.SetRequestURI("/bench")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		handler(fctx)
+	}
+}
+
+func BenchmarkFiberV3_Transwarp(b *testing.B) {
+	tw := transwarp.New(NewFiberAdapter())
+	tw.GET("/bench", transwarpHandler)
+	req := httptest.NewRequest(http.MethodGet, "/bench", nil)
+	w := httptest.NewRecorder()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tw.ServeHTTP(w, req)
+	}
+}
+
+func transwarpHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
+
+
+==============================================================================
+FILE: ./adapter/fiberadapter/fiber_test.go
+==============================================================================
+package fiberadapter_test
+
+import (
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"runtime"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/gofiber/fiber/v3"
+	"github.com/profe-ajedrez/transwarp"
+	"github.com/profe-ajedrez/transwarp/adapter"
+	fiberadapter "github.com/profe-ajedrez/transwarp/adapter/fiberadapter"
+	"github.com/profe-ajedrez/transwarp/router"
+	"github.com/stretchr/testify/assert"
+)
+
+func TestAdapter_Compliance(t *testing.T) {
+	// Esta prueba confirmará que Echo v5 se comporta como un Driver perfecto
+	adapter.RunMuxContract(t, func() router.Router {
+		return fiberadapter.NewFiberAdapter()
+	})
+}
+
+func TestAdapter_Contract(t *testing.T) {
+	adapter.RunRouterContract(t, func() router.Router {
+		// Usamos la config que maneja los puntos
+		return fiberadapter.NewFiberAdapter()
+	})
+}
+
+func TestAdapter_Advanced(t *testing.T) {
+	// Ejecutamos la batería de pruebas de contrato.
+	// Cada sub-test recibe una instancia limpia del adaptador.
+	adapter.RunAdvancedRouterContract(t, func() router.Router {
+		return fiberadapter.NewFiberAdapter()
+	})
+}
+
+func TestFiberNativeMiddlewareInTranswarp(t *testing.T) {
+	// Inicializamos el objeto de aserciones
+	is := assert.New(t)
+
+	// 1. Inicializar el adaptador de Fiber v3
+	fa := fiberadapter.NewFiberAdapter()
+
+	// 2. Registrar un middleware NATIVO de Fiber
+	fa.Use(fiberadapter.FromFiber(func(c fiber.Ctx) error {
+		c.Response().Header.Set("X-Fiber-Native", "activated")
+		return c.Next()
+	}))
+
+	// 3. Crear la instancia de Transwarp
+	tw := transwarp.New(fa)
+
+	// 4. Registrar un middleware estándar de Go vía Transwarp
+	tw.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Transwarp-Standard", "true")
+			next.ServeHTTP(w, r)
+		})
+	})
+
+	// 5. Definir la ruta
+	tw.GET("/middleware-test", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("bridge connected"))
+	})
+
+	// 6. Ejecutar la petición
+	req := httptest.NewRequest(http.MethodGet, "/middleware-test", nil)
+	rec := httptest.NewRecorder()
+
+	tw.ServeHTTP(rec, req)
+
+	// --- ASERCIONES ---
+	is.Equal("activated", rec.Header().Get("X-Fiber-Native"), "El middleware nativo de Fiber falló")
+	is.Equal("true", rec.Header().Get("X-Transwarp-Standard"), "El middleware de Go falló")
+	is.Equal(http.StatusOK, rec.Code)
+	is.Equal("bridge connected", rec.Body.String())
+}
+
+func TestFiberGroupMiddleware(t *testing.T) {
+	is := assert.New(t)
+	fa := fiberadapter.NewFiberAdapter()
+	tw := transwarp.New(fa)
+
+	// 1. Creamos el grupo una sola vez
+	v1 := tw.Group("/v1")
+
+	// 2. Registramos el middleware directamente en el grupo de Transwarp
+	// Transwarp se encarga de pasarlo al adaptador interno.
+	v1.Use(fiberadapter.FromFiber(func(c fiber.Ctx) error {
+		// IMPORTANTE: El nombre debe coincidir con el assert de abajo
+		c.Response().Header.Set("X-V1-Only", "true")
+		return c.Next()
+	}))
+
+	// 3. Registramos la ruta en el MISMO grupo
+	v1.GET("/test", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("v1 ok"))
+	})
+
+	// 4. Ejecutar la petición
+	req1 := httptest.NewRequest(http.MethodGet, "/v1/test", nil)
+	rec1 := httptest.NewRecorder()
+	tw.ServeHTTP(rec1, req1)
+
+	// --- ASERCIONES ---
+	is.Equal("true", rec1.Header().Get("X-V1-Only"), "El header del middleware de Fiber no llegó")
+	is.Equal("v1 ok", rec1.Body.String())
+
+	// 5. Test de aislamiento: Ruta fuera del grupo
+	tw.GET("/outside", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("outside"))
+	})
+
+	req2 := httptest.NewRequest(http.MethodGet, "/outside", nil)
+	rec2 := httptest.NewRecorder()
+	tw.ServeHTTP(rec2, req2)
+
+	is.Empty(rec2.Header().Get("X-V1-Only"), "El header de v1 se filtró a una ruta externa")
+}
+
+// 1. Test de Continuidad: ¿Fiber permite que el flujo siga a Go?
+func TestFromFiber_SuccessFlow(t *testing.T) {
+	is := assert.New(t)
+
+	fiberMw := func(c fiber.Ctx) error {
+		c.Response().Header.Set("X-Fiber-Step", "processed")
+		return c.Next() // Debería llamar al siguiente en la cebolla de Go
+	}
+
+	tw := transwarp.New(fiberadapter.NewFiberAdapter())
+	tw.Use(fiberadapter.FromFiber(fiberMw))
+
+	tw.GET("/ok", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("go-end"))
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/ok", nil)
+	tw.ServeHTTP(rec, req)
+
+	is.Equal("processed", rec.Header().Get("X-Fiber-Step"))
+	is.Equal("go-end", rec.Body.String())
+	is.Equal(http.StatusOK, rec.Code)
+}
+
+// 2. Test de Cortocircuito: ¿Fiber puede detener la petición (Auth Fail)?
+func TestFromFiber_ShortCircuit(t *testing.T) {
+	is := assert.New(t)
+
+	// Middleware que bloquea la petición
+	blocker := func(c fiber.Ctx) error {
+		return c.Status(http.StatusForbidden).SendString("forbidden-by-fiber")
+		// NO llamamos a c.Next()
+	}
+
+	tw := transwarp.New(fiberadapter.NewFiberAdapter())
+	tw.Use(fiberadapter.FromFiber(blocker))
+
+	handlerReached := false
+	tw.GET("/secret", func(w http.ResponseWriter, r *http.Request) {
+		handlerReached = true
+		w.Write([]byte("top-secret"))
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/secret", nil)
+	tw.ServeHTTP(rec, req)
+
+	is.False(handlerReached, "El handler de Go nunca debió ejecutarse")
+	is.Equal(http.StatusForbidden, rec.Code)
+	is.Equal("forbidden-by-fiber", rec.Body.String())
+}
+
+// 3. Test de Propagación de Parámetros: ¿Go sigue viendo los params después de pasar por Fiber?
+func TestFromFiber_ParamIntegrity(t *testing.T) {
+	is := assert.New(t)
+
+	// Middleware pasivo de Fiber
+	passiveMw := func(c fiber.Ctx) error { return c.Next() }
+
+	tw := transwarp.New(fiberadapter.NewFiberAdapter())
+	tw.Use(fiberadapter.FromFiber(passiveMw))
+
+	tw.GET("/user/:id", func(w http.ResponseWriter, r *http.Request) {
+		id := tw.Param(r, "id")
+		w.Write([]byte("user-" + id))
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/user/42", nil)
+	tw.ServeHTTP(rec, req)
+
+	is.Equal("user-42", rec.Body.String(), "Los parámetros de ruta se perdieron en el puente")
+}
+
+// 4. Test de Orden de Ejecución: Go-MW -> Fiber-MW -> Go-Handler
+func TestFromFiber_ExecutionOrder(t *testing.T) {
+	is := assert.New(t)
+	var order []string
+
+	goMw := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			order = append(order, "go-start")
+			next.ServeHTTP(w, r)
+			order = append(order, "go-end")
+		})
+	}
+
+	fiberMw := func(c fiber.Ctx) error {
+		order = append(order, "fiber")
+		return c.Next()
+	}
+
+	tw := transwarp.New(fiberadapter.NewFiberAdapter())
+	tw.Use(goMw)
+	tw.Use(fiberadapter.FromFiber(fiberMw))
+
+	tw.GET("/order", func(w http.ResponseWriter, r *http.Request) {
+		order = append(order, "handler")
+	})
+
+	tw.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/order", nil))
+
+	expected := []string{"go-start", "fiber", "handler", "go-end"}
+	is.Equal(expected, order, "El orden de la 'cebolla' es incorrecto")
+}
+
+// 5. Test de Body: ¿El cuerpo de la petición sobrevive al doble motor?
+func TestFromFiber_BodyPersistence(t *testing.T) {
+	is := assert.New(t)
+
+	fiberMw := func(c fiber.Ctx) error {
+		// Fiber lee el cuerpo
+		body := c.Body()
+		if string(body) != "ping" {
+			return c.Status(400).SendString("bad-body-in-fiber")
+		}
+		return c.Next()
+	}
+
+	tw := transwarp.New(fiberadapter.NewFiberAdapter())
+	tw.Use(fiberadapter.FromFiber(fiberMw))
+
+	tw.POST("/echo", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Write(body)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader("ping"))
+	rec := httptest.NewRecorder()
+	tw.ServeHTTP(rec, req)
+
+	is.Equal("ping", rec.Body.String(), "El cuerpo de la petición se corrompió o desapareció")
+}
+
+func TestPanicStressAndMemoryLeak(t *testing.T) {
+	is := assert.New(t)
+
+	// 1. SILENCIADOR DE LOGS
+	// Evitamos que 10,000 panics inunden la consola y ensucien la memoria
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(os.Stderr) // Restaurar al finalizar el test
+
+	// 2. CONFIGURACIÓN DEL ENTORNO
+	fa := fiberadapter.NewFiberAdapter()
+	tw := transwarp.New(fa)
+
+	// Usamos el middleware de Recovery global (stack en false para ahorrar memoria)
+	tw.Use(transwarp.Recovery(false))
+
+	tw.GET("/panic", func(w http.ResponseWriter, r *http.Request) {
+		panic("ataque de panico deliberado")
+	})
+
+	// 3. PREPARACIÓN DE MEDICIÓN INICIAL
+	runtime.GC()      // Forzar limpieza inicial
+	runtime.Gosched() // Ceder tiempo al planificador
+	var mStart runtime.MemStats
+	runtime.ReadMemStats(&mStart)
+
+	// 4. BOMBARDEO CONCURRENTE
+	const totalRequests = 10000
+	const concurrencyLimit = 100 // Máximo de goroutines simultáneas
+
+	var wg sync.WaitGroup
+	semaphore := make(chan struct{}, concurrencyLimit)
+
+	for i := 0; i < totalRequests; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			semaphore <- struct{}{}        // Ocupar espacio en el semáforo
+			defer func() { <-semaphore }() // Liberar espacio al terminar
+
+			req := httptest.NewRequest(http.MethodGet, "/panic", nil)
+			rec := httptest.NewRecorder()
+
+			// Ejecución de la petición (entrará en pánico y se recuperará)
+			tw.ServeHTTP(rec, req)
+
+			// Verificamos que el Recovery inyectó el Status 500
+			if rec.Code != http.StatusInternalServerError {
+				t.Errorf("Se esperaba 500, se obtuvo %d", rec.Code)
+			}
+		}()
+	}
+
+	// Esperar a que todas las peticiones terminen
+	wg.Wait()
+
+	// 5. MEDICIÓN FINAL Y LIMPIEZA DE POOL
+	// Forzamos varios ciclos de GC para que el runtime procese los objetos del pool
+	for i := 0; i < 3; i++ {
+		runtime.GC()
+		runtime.Gosched()
+	}
+
+	var mEnd runtime.MemStats
+	runtime.ReadMemStats(&mEnd)
+
+	// --- CÁLCULO DE DIFERENCIA ---
+	// La métrica más fiable aquí es HeapObjects (objetos vivos en memoria)
+	heapDiff := int64(mEnd.HeapObjects) - int64(mStart.HeapObjects)
+
+	fmt.Printf("\n--- Resultados del Test de Estrés ---\n")
+	fmt.Printf("Peticiones procesadas: %d\n", totalRequests)
+	fmt.Printf("Objetos extra en Heap: %d\n", heapDiff)
+	fmt.Printf("-------------------------------------\n")
+
+	is.True(heapDiff < 4000, fmt.Sprintf("Fuga de memoria detectada: %d objetos retenidos", heapDiff))
+}
+
+
+
+==============================================================================
+FILE: ./adapter/fiberadapter/middleware_adapter.go
+==============================================================================
+package fiberadapter
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+
+	"github.com/gofiber/fiber/v3"
+	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/profe-ajedrez/transwarp/router"
+	"github.com/valyala/fasthttp"
+)
+
+var fctxPool = sync.Pool{
+	New: func() any { return new(fasthttp.RequestCtx) },
+}
+
+func FromFiber(fiberMw fiber.Handler) func(http.Handler) http.Handler {
+	engine := fiber.New(fiber.Config{Immutable: true})
+	engine.Use(fiberMw)
+
+	engine.All("/*", func(c fiber.Ctx) error {
+		next, _ := c.Locals(router.NextKey).(http.Handler)
+		c.Locals("tw_flow_continued", true)
+		w, _ := c.Locals("tw_writer").(http.ResponseWriter)
+		r, _ := c.Locals("tw_req").(*http.Request)
+
+		// 1. Recuperar o inicializar estado
+		state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
+		if !ok {
+			state = &adapter.TranswarpState{Params: make(map[string]string)}
+		}
+
+		// 2. Merge de parámetros (clonando el mapa para evitar efectos secundarios)
+		newParams := make(map[string]string)
+		for k, v := range state.Params {
+			newParams[k] = v
+		}
+
+		for _, p := range c.Route().Params {
+			rawVal := c.Params(p)
+			if rawVal != "" {
+				unescaped, _ := url.PathUnescape(rawVal)
+				val := clone(unescaped)
+				newParams[p] = val
+				if strings.HasPrefix(p, "*") {
+					newParams["path"] = val
+				}
+			}
+		}
+
+		newState := &adapter.TranswarpState{Params: newParams, Body: state.Body}
+		newCtx := context.WithValue(r.Context(), router.StateKey, newState)
+
+		newReq, _ := http.NewRequestWithContext(newCtx, clone(c.Method()), clone(c.OriginalURL()), r.Body)
+		newReq.Header = r.Header
+
+		// Sincronizar headers de salida (Fiber -> Go)
+		c.Response().Header.VisitAll(func(k, v []byte) {
+			key := clone(string(k))
+			if w.Header().Get(key) == "" {
+				w.Header().Add(key, clone(string(v)))
+			}
+		})
+
+		next.ServeHTTP(w, newReq)
+		return nil
+	})
+
+	fastHandler := engine.Handler()
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fctx := fctxPool.Get().(*fasthttp.RequestCtx)
+			defer fctxPool.Put(fctx)
+
+			fctx.Request.Reset()
+			fctx.Response.Reset()
+
+			// 3. Gestión de Estado Inicial y Lazy Body Reading
+			state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
+			if !ok {
+				var bodyBytes []byte
+				if r.Body != nil && r.Body != http.NoBody {
+					bodyBytes, _ = io.ReadAll(r.Body)
+					r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+				}
+				state = &adapter.TranswarpState{Params: make(map[string]string), Body: bodyBytes}
+				r = r.WithContext(context.WithValue(r.Context(), router.StateKey, state))
+			}
+
+			if len(state.Body) > 0 {
+				fctx.Request.SetBody(state.Body)
+			}
+
+			fctx.SetUserValue(router.NextKey, next)
+			fctx.SetUserValue("tw_writer", w)
+			fctx.SetUserValue("tw_req", r)
+			fctx.Request.SetRequestURI(r.URL.RequestURI())
+			fctx.Request.Header.SetMethod(r.Method)
+
+			fastHandler(fctx)
+
+			if fctx.UserValue("tw_flow_continued") == nil {
+				fctx.Response.Header.VisitAll(func(k, v []byte) {
+					w.Header().Set(clone(string(k)), clone(string(v)))
+				})
+				w.WriteHeader(fctx.Response.StatusCode())
+				w.Write(fctx.Response.Body())
+			}
+		})
+	}
+}
+
+
+
+==============================================================================
+FILE: ./adapter/fiberadapter/shared.go
+==============================================================================
+package fiberadapter
+
+import (
+	"context"
+	"net/http"
+	"net/url"
+	"strings"
+
+	"github.com/gofiber/fiber/v3"
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+// clone fuerza una asignación física de memoria para el string.
+func clone(s string) string {
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(s)
+	return b.String()
+}
+
+// syncParams extrae, decodifica y clona parámetros de Fiber para el contexto de Go.
+func syncParams(c fiber.Ctx, baseCtx context.Context) map[string]string {
+	newParams := make(map[string]string)
+
+	// 1. Preservar parámetros previos del contexto
+	if oldParams, ok := baseCtx.Value(router.ParamsKey).(map[string]string); ok {
+		for k, v := range oldParams {
+			newParams[k] = v
+		}
+	}
+
+	// 2. Path Params de Fiber (con Unescape para cumplir con los tests)
+	for _, p := range c.Route().Params {
+		rawVal := c.Params(p)
+		if rawVal != "" {
+			unescaped, err := url.PathUnescape(rawVal)
+			if err != nil {
+				unescaped = rawVal
+			}
+
+			val := clone(unescaped)
+			newParams[p] = val
+			if strings.HasPrefix(p, "*") {
+				newParams["path"] = val
+				newParams["*"] = val
+			}
+		}
+	}
+
+	// 3. Query Params
+	for k, v := range c.Queries() {
+		unescaped, _ := url.QueryUnescape(v)
+		newParams[clone(k)] = clone(unescaped)
+	}
+
+	return newParams
+}
+
+// syncHeaders copia las cabeceras de la respuesta de Fiber hacia el ResponseWriter de Go.
+func syncHeaders(c fiber.Ctx, w http.ResponseWriter) {
+	c.Response().Header.VisitAll(func(k, v []byte) {
+		key := clone(string(k))
+		if w.Header().Get(key) == "" {
+			w.Header().Add(key, clone(string(v)))
+		}
+	})
+}
+
+
+
+==============================================================================
+FILE: ./adapter/fiberadapter/fiber_smoke_test.go
+==============================================================================
+package fiberadapter_test
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/profe-ajedrez/transwarp/adapter/fiberadapter"
+
+	"github.com/profe-ajedrez/transwarp/server"
+)
+
+func TestTranswarp_FullStack_SmokeTest_Fiber(t *testing.T) {
+	// 1. Inicializar el adaptador de Fiber v3
+	adapter := fiberadapter.NewFiberAdapter()
+
+	// 2. Definir ruta con extensión
+	// transformPathForFiber convertirá esto en /api/v1/users/:id
+	adapter.GET("/api/v1/users/:id.json", func(w http.ResponseWriter, r *http.Request) {
+		id := adapter.Param(r, "id")
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok","id":"` + id + `"}`))
+	})
+
+	// 3. Configurar e iniciar servidor de Transwarp
+	srv := server.New(server.Config{Addr: "127.0.0.1:0"}, adapter)
+
+	srvErr := make(chan error, 1)
+	go func() {
+		srvErr <- srv.Start()
+	}()
+
+	addr := srv.Addr()
+
+	// 4. Realizar la petición real (net/http -> fasthttp -> net/http)
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + addr + "/api/v1/users/admin.json")
+	if err != nil {
+		t.Fatalf("Error en la petición: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// 5. Validar consistencia
+	body, _ := io.ReadAll(resp.Body)
+	// Fiber captura admin.json completo bajo la llave 'id'
+	expectedBody := `{"status":"ok","id":"admin.json"}`
+	if string(body) != expectedBody {
+		t.Errorf("Fiber falló en la consistencia.\nEsperado: %s\nObtenido: %s", expectedBody, string(body))
+	}
+
+	// 6. Graceful Shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Errorf("Error en Shutdown: %v", err)
+	}
+}
+
+
+
+==============================================================================
+FILE: ./adapter/muxadapter/mux.go
+==============================================================================
+package muxadapter
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+
+	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+const replazor = "___replazor___"
+
+type PathParamCleaner struct {
+	encode func(string) string
+	decode func(string) string
+}
+
+type MuxConfig struct {
+	PathParamCleaner PathParamCleaner
+}
+
+func NewDefaultMuxConfig() *MuxConfig {
+	return &MuxConfig{PathParamCleaner: PathParamCleaner{
+		encode: func(s string) string { return s },
+		decode: func(s string) string { return s },
+	}}
+}
+
+func SimpleCleanerMuxConfig() *MuxConfig {
+	return &MuxConfig{PathParamCleaner: PathParamCleaner{
+		encode: func(s string) string {
+			return strings.ReplaceAll(s, ".", replazor)
+		},
+		decode: func(s string) string {
+			return strings.ReplaceAll(s, replazor, ".")
+		},
+	}}
+}
+
+type MuxAdapter struct {
+	mux         *http.ServeMux
+	prefix      string
+	middlewares []func(http.Handler) http.Handler
+	cfg         *MuxConfig
+}
+
+func NewMuxAdapter(cfg *MuxConfig) *MuxAdapter {
+	if cfg == nil {
+		cfg = NewDefaultMuxConfig()
+	}
+	return &MuxAdapter{
+		mux: http.NewServeMux(),
+		cfg: cfg,
+	}
+}
+
+func (a *MuxAdapter) Param(r *http.Request, key string) string {
+	state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
+	if !ok || state.Params == nil {
+		return ""
+	}
+
+	// 1. Coincidencia exacta (ej: "id.json" o "id")
+	if val, ok := state.Params[key]; ok {
+		return val
+	}
+
+	// 2. Búsqueda Fuzzy: Si pides "id" pero la llave es "id.json"
+	// Esto resuelve el problema de las extensiones en ruteadores rígidos
+	for k, v := range state.Params {
+		if k == key || strings.HasPrefix(k, key+".") {
+			return v
+		}
+	}
+
+	// 3. Fallback para comodín
+	if key == "*" {
+		if v, ok := state.Params["any"]; ok {
+			return v
+		}
+	}
+
+	return ""
+}
+
+func (a *MuxAdapter) GET(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	a.register(http.MethodGet, path, h, mws...)
+}
+
+func (a *MuxAdapter) POST(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	a.register(http.MethodPost, path, h, mws...)
+}
+
+func (a *MuxAdapter) PUT(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	a.register(http.MethodPut, path, h, mws...)
+}
+
+func (a *MuxAdapter) DELETE(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	a.register(http.MethodDelete, path, h, mws...)
+}
+
+func (a *MuxAdapter) Group(prefix string) router.Router {
+	mwsCopy := make([]func(http.Handler) http.Handler, len(a.middlewares))
+	copy(mwsCopy, a.middlewares)
+	return &MuxAdapter{
+		mux:         a.mux,
+		prefix:      a.joinPaths(a.prefix, prefix),
+		middlewares: mwsCopy,
+		cfg:         a.cfg,
+	}
+}
+
+func (a *MuxAdapter) Use(mws ...func(http.Handler) http.Handler) {
+	a.middlewares = append(a.middlewares, mws...)
+}
+
+func (a *MuxAdapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Estado inicial para middlewares globales
+	state := &adapter.TranswarpState{
+		Params: make(map[string]string),
+	}
+	ctx := context.WithValue(r.Context(), router.StateKey, state)
+	a.mux.ServeHTTP(w, r.WithContext(ctx))
+}
+
+func (a *MuxAdapter) register(method, path string, h http.HandlerFunc, routeMws ...func(http.Handler) http.Handler) {
+	translatedPath, keys := a.translate(path)
+	fullPath := a.joinPaths(a.prefix, translatedPath)
+
+	// CRÍTICO: No encodear toda la ruta, solo los tokens internos.
+	// El punto literal de ".json" debe quedarse como punto para que Mux haga match.
+	pattern := fmt.Sprintf("%s %s", method, fullPath)
+
+	var finalHandler http.Handler = h
+	for i := len(routeMws) - 1; i >= 0; i-- {
+		finalHandler = routeMws[i](finalHandler)
+	}
+	for i := len(a.middlewares) - 1; i >= 0; i-- {
+		finalHandler = a.middlewares[i](finalHandler)
+	}
+
+	a.mux.Handle(pattern, a.wrapState(finalHandler, keys))
+}
+
+func (a *MuxAdapter) wrapState(onion http.Handler, keys []string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		state, _ := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
+		if state == nil {
+			state = &adapter.TranswarpState{Params: make(map[string]string)}
+		}
+
+		newParams := make(map[string]string)
+		for k, v := range state.Params {
+			newParams[k] = v
+		}
+
+		for _, k := range keys {
+			// USAMOS EL ENCODE: Para buscar en Mux lo que guardamos con encode
+			goKey := a.cfg.PathParamCleaner.encode(k)
+			if val := r.PathValue(goKey); val != "" {
+				// Guardamos el valor bajo la llave original (la "decodificada")
+				// No hace falta llamar a decode() aquí porque 'k' ya es la llave original
+				newParams[k] = val
+			}
+		}
+
+		// ... Lógica de Body (Lazy Body) ...
+		var body []byte = state.Body
+		if body == nil && r.Body != nil && r.Body != http.NoBody {
+			body, _ = io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+
+		newState := &adapter.TranswarpState{Params: newParams, Body: body}
+		ctx := context.WithValue(r.Context(), router.StateKey, newState)
+		onion.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// joinPaths normaliza la unión de prefijos y rutas evitando "//"
+func (a *MuxAdapter) joinPaths(base, next string) string {
+	if next == "" {
+		return "/" + strings.Trim(base, "/")
+	}
+	// Limpia barras duplicadas en la unión
+	return strings.TrimSuffix(base, "/") + "/" + strings.TrimPrefix(next, "/")
+}
+
+func (a *MuxAdapter) Engine() any { return a.mux }
+
+func (a *MuxAdapter) translate(path string) (string, []string) {
+	var keys []string
+
+	// 1. Manejo de Wildcards
+	if idx := strings.Index(path, "*"); idx != -1 {
+		name := path[idx+1:]
+		if name == "" {
+			name = "any"
+		}
+		keys = append(keys, name)
+
+		// USAMOS EL ENCODE: any.json -> any___replazor___json
+		safeName := a.cfg.PathParamCleaner.encode(name)
+		return path[:idx] + "{" + safeName + "...}", keys
+	}
+
+	// 2. Traducción de parámetros: :id.json -> {id___replazor___json}
+	segments := strings.Split(path, "/")
+	for i, seg := range segments {
+		if strings.HasPrefix(seg, ":") {
+			name := strings.TrimPrefix(seg, ":")
+			keys = append(keys, name)
+
+			// USAMOS EL ENCODE: El ruteador de Go verá un nombre limpio
+			safeName := a.cfg.PathParamCleaner.encode(name)
+			segments[i] = "{" + safeName + "}"
+		}
+	}
+
+	return strings.Join(segments, "/"), keys
+}
+
+
+
+==============================================================================
+FILE: ./adapter/muxadapter/mux_test.go
+==============================================================================
+package muxadapter_test
+
+import (
+	"testing"
+
+	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/profe-ajedrez/transwarp/adapter/muxadapter"
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+func TestMuxAdapter_Compliance(t *testing.T) {
+	// Ejecutamos la suite de contrato pasando la factory del MuxAdapter
+	adapter.RunMuxContract(t, func() router.Router {
+		return muxadapter.NewMuxAdapter(muxadapter.SimpleCleanerMuxConfig())
+	})
+}
+
+func TestMuxAdapter_Contract(t *testing.T) {
+	adapter.RunRouterContract(t, func() router.Router {
+		// Usamos la config que maneja los puntos
+		return muxadapter.NewMuxAdapter(muxadapter.SimpleCleanerMuxConfig())
+	})
+}
+
+func TestChiAdapter_Advanced(t *testing.T) {
+	// Ejecutamos la batería de pruebas de contrato.
+	// Cada sub-test recibe una instancia limpia del adaptador.
+	adapter.RunAdvancedRouterContract(t, func() router.Router {
+		return muxadapter.NewMuxAdapter(muxadapter.SimpleCleanerMuxConfig())
+	})
+}
+
+
+
+==============================================================================
+FILE: ./adapter/muxadapter/mux_bench_test.go
+==============================================================================
+package muxadapter
+
+import (
+	"testing"
+
+	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/profe-ajedrez/transwarp/router"
+)
+
+func BenchmarkMux(b *testing.B) {
+	adapter.RunSuiteBenchmarks(b, func() router.Router {
+		return NewMuxAdapter(SimpleCleanerMuxConfig())
+	})
+}
+
+
+
+==============================================================================
+FILE: ./adapter/muxadapter/mux_smoke_test.go
+==============================================================================
+package muxadapter_test
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/profe-ajedrez/transwarp/adapter/muxadapter"
+	"github.com/profe-ajedrez/transwarp/server"
+)
+
+func TestTranswarp_FullStack_SmokeTest_Mux(t *testing.T) {
+	// 1. Inicializar el adaptador de Mux con el limpiador de puntos
+	// Usamos SimpleCleanerMuxConfig porque Go 1.22+ no permite puntos en {nombres}
+	cfgMux := muxadapter.SimpleCleanerMuxConfig()
+	adapter := muxadapter.NewMuxAdapter(cfgMux)
+
+	// 2. Registrar ruta con extensión
+	// Intentamos capturar :id en una ruta que termina en .json
+	adapter.GET("/api/v1/users/:id.json", func(w http.ResponseWriter, r *http.Request) {
+		id := adapter.Param(r, "id")
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok","id":"` + id + `"}`))
+	})
+
+	// 3. Configurar e iniciar servidor
+	srvCfg := server.Config{
+		Addr: "127.0.0.1:0", // Puerto dinámico
+	}
+	srv := server.New(srvCfg, adapter)
+
+	go func() {
+		_ = srv.Start()
+	}()
+
+	addr := srv.Addr()
+
+	// 4. Realizar la petición
+	client := &http.Client{Timeout: 2 * time.Second}
+	// Probamos admin.json
+	resp, err := client.Get("http://" + addr + "/api/v1/users/admin.json")
+	if err != nil {
+		t.Fatalf("Error en la petición: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// 5. Validar respuesta
+	body, _ := io.ReadAll(resp.Body)
+
+	// NOTA: Aquí es donde Mux suele comportarse distinto a Echo.
+	// Si la ruta es /:id.json, Mux captura el segmento completo o solo lo anterior al punto?
+	expectedBody := `{"status":"ok","id":"admin.json"}`
+	if string(body) != expectedBody {
+		t.Errorf("Mux falló. Esperado %s, obtenido %s", expectedBody, string(body))
+	}
+	// 6. Graceful Shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(ctx)
+}
+
+
+
+==============================================================================
+FILE: ./go.mod
+==============================================================================
+module github.com/profe-ajedrez/transwarp
+
+go 1.25.7
+
+retract [v1.0.0, v1.0.3]
+
+require github.com/go-playground/validator/v10 v10.30.1
+
+require (
+	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
+	github.com/go-playground/locales v0.14.1 // indirect
+	github.com/go-playground/universal-translator v0.18.1 // indirect
+	github.com/leodido/go-urn v1.4.0 // indirect
+	github.com/stretchr/testify v1.11.1 // indirect
+	golang.org/x/crypto v0.48.0 // indirect
+	golang.org/x/sys v0.41.0 // indirect
+	golang.org/x/text v0.34.0 // indirect
+)
+
+
+
+==============================================================================
+FILE: ./adapter/ginadapter/go.mod
+==============================================================================
+module github.com/profe-ajedrez/transwarp/adapter/ginadapter
+
+go 1.25.7
+
+replace github.com/profe-ajedrez/transwarp => ../../
+
+require (
+	github.com/gin-gonic/gin v1.11.0
+	github.com/profe-ajedrez/transwarp v0.0.0-00010101000000-000000000000
+)
+
+require (
+	github.com/bytedance/gopkg v0.1.3 // indirect
+	github.com/bytedance/sonic v1.15.0 // indirect
+	github.com/bytedance/sonic/loader v0.5.0 // indirect
+	github.com/cloudwego/base64x v0.1.6 // indirect
+	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
+	github.com/gin-contrib/sse v1.1.0 // indirect
+	github.com/go-playground/locales v0.14.1 // indirect
+	github.com/go-playground/universal-translator v0.18.1 // indirect
+	github.com/go-playground/validator/v10 v10.30.1 // indirect
+	github.com/goccy/go-json v0.10.5 // indirect
+	github.com/goccy/go-yaml v1.19.2 // indirect
+	github.com/json-iterator/go v1.1.12 // indirect
+	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	github.com/leodido/go-urn v1.4.0 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
+	github.com/modern-go/reflect2 v1.0.2 // indirect
+	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
+	github.com/quic-go/qpack v0.6.0 // indirect
+	github.com/quic-go/quic-go v0.59.0 // indirect
+	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
+	github.com/ugorji/go/codec v1.3.1 // indirect
+	golang.org/x/arch v0.24.0 // indirect
+	golang.org/x/crypto v0.48.0 // indirect
+	golang.org/x/net v0.50.0 // indirect
+	golang.org/x/sys v0.41.0 // indirect
+	golang.org/x/text v0.34.0 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
+)
+
+
+
+==============================================================================
+FILE: ./adapter/echoadapter/go.mod
+==============================================================================
+module github.com/profe-ajedrez/transwarp/adapter/echoadapter
+
+go 1.25.7
+
+replace github.com/profe-ajedrez/transwarp => ../../
+
+require (
+	github.com/labstack/echo/v5 v5.0.3
+	github.com/profe-ajedrez/transwarp v0.0.0-00010101000000-000000000000
+)
+
+require golang.org/x/time v0.14.0 // indirect
+
+
+
+==============================================================================
+FILE: ./adapter/chiadapter/go.mod
+==============================================================================
+module github.com/profe-ajedrez/transwarp/adapter/chiadapter
+
+go 1.25.7
+
+replace github.com/profe-ajedrez/transwarp => ../../
+
+require (
+	github.com/go-chi/chi/v5 v5.2.5
+	github.com/profe-ajedrez/transwarp v0.0.0-00010101000000-000000000000
+)
+
+
+
+==============================================================================
+FILE: ./adapter/fiberadapter/go.mod
+==============================================================================
+module github.com/profe-ajedrez/transwarp/adapter/fiberadapter
+
+go 1.25.7
+
+replace github.com/profe-ajedrez/transwarp => ../../
+
+require (
+	github.com/gofiber/fiber/v3 v3.0.0
+	github.com/profe-ajedrez/transwarp v0.0.0-00010101000000-000000000000
+	github.com/stretchr/testify v1.11.1
+	github.com/valyala/fasthttp v1.69.0
+)
+
+require (
+	github.com/andybalholm/brotli v1.2.0 // indirect
+	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/gofiber/schema v1.7.0 // indirect
+	github.com/gofiber/utils/v2 v2.0.1 // indirect
+	github.com/google/uuid v1.6.0 // indirect
+	github.com/klauspost/compress v1.18.4 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/philhofer/fwd v1.2.0 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/tinylib/msgp v1.6.3 // indirect
+	github.com/valyala/bytebufferpool v1.0.0 // indirect
+	golang.org/x/crypto v0.48.0 // indirect
+	golang.org/x/net v0.50.0 // indirect
+	golang.org/x/sys v0.41.0 // indirect
+	golang.org/x/text v0.34.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
+)
+
+
+
+==============================================================================
+FILE: ./adapter/muxadapter/go.mod
+==============================================================================
+module github.com/profe-ajedrez/transwarp/adapter/muxadapter
+
+go 1.25.7
+
+replace github.com/profe-ajedrez/transwarp => ../../
+
+require github.com/profe-ajedrez/transwarp v0.0.0-00010101000000-000000000000
+
+
+
+==============================================================================
+FILE: ./tagger.sh
+==============================================================================
+#!/bin/bash
+
+# ==============================================================================
+# TRANSWARP TAGGER - Documentación de Uso
+# ==============================================================================
+# Este script automatiza el etiquetado (tagging) de versiones para Transwarp.
+# Al ser un MONOREPO con SUBMÓDULOS de Go, las etiquetas deben seguir una 
+# estructura específica para que 'go get' funcione correctamente:
+#
+# 1. ESTRUCTURA DE LOS TAGS:
+#    - Core: Se taguea directamente (ej: v1.0.0). Go lo asocia a la raíz.
+#    - Adaptadores: Deben incluir la ruta relativa (ej: adapter/echoadapter/v1.0.0).
+#
+# 2. FLUJO DE PUBLICACIÓN RECOMENDADO:
+#    A. Si cambias el Core:
+#       1. Taguea el Core (ej: v1.1.0).
+#       2. Sube el tag (git push origin v1.1.0).
+#    B. Si un Adaptador depende de cambios en el Core:
+#       1. Actualiza el go.mod del adaptador para requerir la nueva versión del Core.
+#       2. Haz commit de ese cambio.
+#       3. Taguea el Adaptador usando este script.
+#
+# 3. POR QUÉ ESTA ESTRUCTURA:
+#    Esto permite que los usuarios importen solo lo que necesitan:
+#    go get github.com/profe-ajedrez/transwarp/adapter/echoadapter@v1.1.0
+#    Sin descargar las dependencias de Fiber, Gin o Chi.
+# ==============================================================================
+
+# Colores para la terminal
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# --- VALIDACIONES INICIALES ---
+
+# 1. Verificar si git está instalado
+if ! command -v git &> /dev/null; then
+    echo -e "${RED}Error: El comando 'git' no está instalado o no se encuentra en el PATH.${NC}"
+    exit 1
+fi
+
+# 2. Verificar si es un repositorio git válido
+if ! git rev-parse --is-inside-work-tree &> /dev/null; then
+    echo -e "${RED}Error: No se detectó un repositorio Git válido en este directorio.${NC}"
+    echo -e "${YELLOW}Asegúrate de ejecutar este script desde la raíz de Transwarp.${NC}"
+    exit 1
+fi
+
+if ! git rev-parse --verify HEAD &> /dev/null; then
+    echo -e "${RED}Error: El repositorio no tiene commits.${NC}"
+    echo -e "${YELLOW}Debes realizar al menos un commit (git commit) antes de crear un tag.${NC}"
+    exit 1
+fi
+
+echo -e "${BLUE}=== Transwarp Tagger v2.2 ===${NC}"
+
+# Función para obtener la última versión de un componente
+get_last_version() {
+    local prefix=$1
+    local last_tag
+    if [ -z "$prefix" ]; then
+        last_tag=$(git tag -l "v*" | grep -v "/" | sort -V | tail -n 1)
+    else
+        last_tag=$(git tag -l "${prefix}v*" | sort -V | tail -n 1)
+    fi
+    
+    [ -z "$last_tag" ] && echo "Ninguna" || echo "$last_tag"
+}
+
+# 1. Selección de Componente
+echo "Selecciona el componente a taguear:"
+echo "0) Core (Raíz)"
+echo "1) Echo Adapter"
+echo "2) Fiber Adapter"
+echo "3) Gin Adapter"
+echo "4) Chi Adapter"
+echo "5) Mux Adapter"
+read -p "Opción: " COMP
+
+case $COMP in
+    0) NAME="Core"; PREFIX="";;
+    1) NAME="Echo"; PREFIX="adapter/echoadapter/";;
+    2) NAME="Fiber"; PREFIX="adapter/fiberadapter2/";;
+    3) NAME="Gin"; PREFIX="adapter/ginadapter/";;
+    4) NAME="Chi"; PREFIX="adapter/chiadapter/";;
+    5) NAME="Mux"; PREFIX="adapter/mux_adapter/";;
+    *) echo -e "${RED}Opción inválida${NC}"; exit 1;;
+esac
+
+# 2. Mostrar versiones actuales
+echo -e "\n${CYAN}--- Estado Actual en Git ---${NC}"
+CORE_VER=$(get_last_version "")
+COMP_VER=$(get_last_version "$PREFIX")
+
+echo -e "Última versión del Core: ${YELLOW}$CORE_VER${NC}"
+if [ "$COMP" -ne 0 ]; then
+    echo -e "Última versión de $NAME: ${YELLOW}$COMP_VER${NC}"
+fi
+echo -e "${CYAN}----------------------------${NC}\n"
+
+# 3. Solicitar nueva versión
+read -p "Introduce la NUEVA versión (ej: v1.0.0): " VERSION
+
+if [[ ! $VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo -e "${YELLOW}Advertencia: La versión debería seguir el formato vX.Y.Z (SemVer)${NC}"
+fi
+
+FULL_TAG="${PREFIX}${VERSION}"
+
+# 4. Verificación de duplicados
+if git rev-parse "$FULL_TAG" >/dev/null 2>&1; then
+    echo -e "${RED}Error: El tag $FULL_TAG ya existe localmente.${NC}"
+    exit 1
+fi
+
+echo -e "\nComponente: ${BLUE}$NAME${NC}"
+echo -e "Tag final:  ${GREEN}${FULL_TAG}${NC}"
+read -p "¿Confirmar creación local? (s/n): " CONFIRM
+
+if [[ $CONFIRM == "s" ]]; then
+    git tag -a "$FULL_TAG" -m "Release $NAME $VERSION"
+    echo -e "${GREEN}Tag creado localmente.${NC}"
+    
+    read -p "¿Subir a origin ahora? (s/n): " PUSH
+    if [[ $PUSH == "s" ]]; then
+        git push origin "$FULL_TAG"
+        echo -e "${GREEN}Tag subido con éxito.${NC}"
+    fi
+else
+    echo "Operación cancelada."
+fi
+
+
+==============================================================================
+FILE: ./bundle_code.sh
+==============================================================================
+#!/bin/bash
+
+# Nombre del archivo de salida
+OUTPUT="transwarp_bundle.txt"
+
+# Colores para la terminal
+BLUE='\033[0;34m'
+GREEN='\033[0;32m'
+NC='\033[0m'
+
+echo -e "${BLUE}Generando paquete de código en $OUTPUT...${NC}"
+
+# Limpiar archivo anterior si existe
+> "$OUTPUT"
+
+# Lista de extensiones a incluir
+# Puedes añadir más si usas .sql, .yaml, etc.
+EXTENSIONS=("*.go" "*.mod" "*.sh" "*.md")
+
+# Función para añadir archivos
+bundle_files() {
+    for ext in "${EXTENSIONS[@]}"; do
+        # Buscamos archivos ignorando carpetas pesadas o irrelevantes
+        find . -name "$ext" \
+            -not -path "*/.*" \
+            -not -path "*/vendor/*" \
+            -not -path "*/bin/*" \
+            -type f | while read -r file; do
+            
+            echo "Añadiendo: $file"
+            echo "==============================================================================" >> "$OUTPUT"
+            echo "FILE: $file" >> "$OUTPUT"
+            echo "==============================================================================" >> "$OUTPUT"
+            cat "$file" >> "$OUTPUT"
+            echo -e "\n\n" >> "$OUTPUT"
+        done
+    done
+}
+
+bundle_files
+
+echo -e "${GREEN}¡Listo! Todo el código ha sido volcado en $OUTPUT${NC}"
+
+
