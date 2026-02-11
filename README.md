@@ -21,7 +21,49 @@ go get github.com/profe-ajedrez/transwarp
 ```
 
 
-### 2. Basic Example (using Gin)
+### 2. Basic Examples
+
+
+#### 2.1 Using Mux (Go  1.22+)
+
+```go
+package main
+
+import (
+	"context"
+	"net/http"
+	"time"
+
+	"github.com/profe-ajedrez/transwarp/adapter/muxadapter"
+	"github.com/profe-ajedrez/transwarp/server"
+)
+
+func main() {
+	// 1. Initialize the Standard Mux (Go 1.22+)
+	mux := http.NewServeMux()
+	
+	// 2. Wrap it with the Mux Adapter
+	adp := muxadapter.New(mux)
+
+	// 3. Define routes with parameters using the unified API
+	adp.GET("/hello/{name}", func(w http.ResponseWriter, r *http.Request) {
+		name := adp.Param(r, "name")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Hello, " + name + "!"))
+	})
+
+	// 4. Start the managed server with graceful shutdown
+	srv := server.New(server.Config{
+		Addr: ":8080",
+		WriteTimeout: 10 * time.Second,
+	}, adp)
+
+	// In a real app, use a context that listens for OS signals
+	srv.Start(context.Background())
+}
+```
+
+#### 2.2 Using Gin
 
 ```Go
 package main
@@ -55,14 +97,19 @@ func main() {
 
 ## 🛠️ Supported Adapters
 
-| Router         | Package              | Status        |
-| ----------------| ----------------------| ---------------|
-| Gin            | adapter/ginadapter   | ✅ Stable      |
-| Echo           | adapter/echoadapter  | ✅ Stable      |
-| Fiber          | adapter/fiberadapter | ✅ Stable      |
-| Chi            | adapter/chiadapter   | ✅ Stable      |
-| Standard (Mux) | net/http             | ✅ In Progress |
+| Router                  | Package              | Status        |
+| -------------------------| ----------------------| ---------------|
+| Gin                     | adapter/ginadapter   | ✅ Stable      |
+| Echo                    | adapter/echoadapter  | ✅ Stable      |
+| Fiber                   | adapter/fiberadapter | ✅ Stable      |
+| Chi                     | adapter/chiadapter   | ✅ Stable      |
+| Standard (Mux Go 1.22+) | net/http             | ✅ In Progress |
 
+
+
+🧩 Native Go Power
+
+Transwarp isn't just for heavy frameworks. With the Mux Adapter, you can leverage the enhanced routing capabilities introduced in Go 1.22 while maintaining the unified Transwarp API and middleware system. This is perfect for developers who want to keep dependencies to an absolute minimum.
 
 
 ## 📂 Project Structure
