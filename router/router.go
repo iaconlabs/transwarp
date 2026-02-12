@@ -45,6 +45,7 @@ type Router interface {
 	ANY(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler)
 
 	Handle(method, path string, h http.Handler, mws ...func(http.Handler) http.Handler)
+	// Handlefunc registers a http.HandlerFunc to the requested path
 	HandleFunc(method, path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler)
 
 	// Use adds global middlewares to the adapter.
