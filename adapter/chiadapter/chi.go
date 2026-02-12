@@ -13,6 +13,8 @@ import (
 	"github.com/iaconlabs/transwarp/router"
 )
 
+var _ router.Router = &ChiAdapter{}
+
 // ChiAdapter implements router.Router using the chi v5 router.
 type ChiAdapter struct {
 	mux         *chi.Mux
@@ -100,6 +102,31 @@ func (a *ChiAdapter) DELETE(p string, h http.HandlerFunc, m ...func(http.Handler
 
 func (a *ChiAdapter) OPTIONS(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
 	a.register(http.MethodOptions, p, h, m...)
+}
+
+// Handle registers a new route with a specific http.Handler and optional middlewares.
+func (a *ChiAdapter) Handle(method, path string, h http.Handler, mws ...func(http.Handler) http.Handler) {
+	a.register(method, path, h.ServeHTTP, mws...)
+}
+
+// HandleFunc registers a new route with a specific http.HandlerFunc and optional middlewares.
+func (a *ChiAdapter) HandleFunc(method, path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	a.register(method, path, h, mws...)
+}
+
+func (a *ChiAdapter) ANY(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	methods := []string{
+		http.MethodGet,
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodDelete,
+		http.MethodPatch,
+		http.MethodOptions,
+	}
+
+	for _, method := range methods {
+		a.register(method, path, h, mws...)
+	}
 }
 
 func (a *ChiAdapter) Engine() any { return a.mux }

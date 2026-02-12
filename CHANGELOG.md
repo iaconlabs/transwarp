@@ -4,8 +4,26 @@ All notable changes to the Transwarp project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+[v0.0.6] - 2026-02-12
 
-[v0.0.4] - 2026-02-11
+Added
+
+  - Generic Routing Methods: The Handle and HandleFunc methods have been implemented in the Router interface and on all adapters (Chi, Echo, Gin, Mux, Fiber). This allows for the direct integration of standard net/http handlers.
+
+  - The ANY Method: A new convenience method for registering a route under all standard HTTP verbs (GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD) in a single call.
+
+  - Extended Contract Testing: The contract test suite (RunRouterContract) has been expanded to validate:
+
+    * The correct functioning of Handle and HandleFunc.
+
+    * State propagation across multiple records using ANY.
+
+Changed
+
+  - Standard Parity: The Router interface is now a compatible superset of http.Handler, facilitating migration from applications using only the standard library.
+
+
+[v0.0.4, v0.0.5] - 2026-02-11
 
 Added
 

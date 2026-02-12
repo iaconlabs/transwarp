@@ -232,6 +232,32 @@ func (a *FiberAdapter) OPTIONS(p string, h http.HandlerFunc, m ...func(http.Hand
 	a.register(http.MethodOptions, p, h, m...)
 }
 
+// Handle registers a new route with a specific http.Handler and optional middlewares.
+func (a *FiberAdapter) Handle(method, path string, h http.Handler, mws ...func(http.Handler) http.Handler) {
+	a.register(method, path, h.ServeHTTP, mws...)
+}
+
+// HandleFunc registers a new route with a http.HandlerFunc and optional middlewares.
+func (a *FiberAdapter) HandleFunc(method, path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	a.register(method, path, h, mws...)
+}
+
+// ANY registers the same handler for GET, POST, PUT, DELETE, PATCH and OPTIONS.
+func (a *FiberAdapter) ANY(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	methods := []string{
+		http.MethodGet,
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodDelete,
+		http.MethodPatch,
+		http.MethodOptions,
+	}
+
+	for _, method := range methods {
+		a.register(method, path, h, mws...)
+	}
+}
+
 func (a *FiberAdapter) register(m, p string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
 	fullPath := a.prefix + "/" + strings.TrimPrefix(p, "/")
 	fullPath = strings.ReplaceAll(fullPath, "//", "/")

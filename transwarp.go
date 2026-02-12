@@ -73,3 +73,17 @@ func (t *Transwarp) Group(prefix string) router.Router {
 func (t *Transwarp) Engine() any {
 	return t.adapter.Engine()
 }
+
+// Handle registers the handler for the given pattern
+func (t *Transwarp) Handle(method, pattern string, handler http.Handler, mws ...func(http.Handler) http.Handler) {
+	t.adapter.Handle(method, pattern, handler, mws...)
+}
+
+// HandleFunc register an ordinary function as an HTTP handler for a specific path in a web server
+func (t *Transwarp) HandleFunc(method, path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	t.adapter.HandleFunc(method, path, h, mws...)
+}
+
+func (t *Transwarp) ANY(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	t.adapter.ANY(path, h, mws...)
+}
