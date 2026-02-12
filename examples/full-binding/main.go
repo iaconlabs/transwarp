@@ -21,12 +21,14 @@ type ProductDTO struct {
 	Price float64 `json:"price" validate:"required,gt=0"`
 }
 
-// Custom validation logic
+// skuValidator reports whether the provided field's string value begins with "TW-".
+// It returns true when the value starts with "TW-", false otherwise.
 func skuValidator(fl validator.FieldLevel) bool {
 	sku := fl.Field().String()
 	return strings.HasPrefix(sku, "TW-")
 }
 
+// main registers a custom "sku_format" validation that requires SKUs to start with "TW-", configures the POST /products route with validation, creates and starts the HTTP server on ":8080", and prints a startup message.
 func main() {
 	// 1. Get the shared validator and register our business rule
 	v := middleware.GetValidator()
@@ -43,6 +45,9 @@ func main() {
 	srv.Start(context.Background())
 }
 
+// handleCreate writes a JSON response indicating validation succeeded and includes the validated ProductDTO.
+// It extracts the validated *ProductDTO from the request context using router.ValidationKey and responds with
+// Content-Type "application/json" and body `{"status":"valid","data": <product>}`.
 func handleCreate(w http.ResponseWriter, r *http.Request) {
 	data := r.Context().Value(router.ValidationKey).(*ProductDTO)
 	w.Header().Set("Content-Type", "application/json")

@@ -39,7 +39,8 @@ type UserRegistrationDTO struct {
 }
 
 // EmailUniqueValidator creates a validator function with access to the DB.
-// This is the "Dependency Injection" pattern for validators.
+// EmailUniqueValidator returns a validator.Func that validates an email string is not already present in the provided MockDatabase.
+// The returned function yields `true` if the email is not taken, `false` otherwise.
 func EmailUniqueValidator(db *MockDatabase) validator.Func {
 	return func(fl validator.FieldLevel) bool {
 		email := fl.Field().String()
@@ -48,6 +49,9 @@ func EmailUniqueValidator(db *MockDatabase) validator.Func {
 	}
 }
 
+// main initializes a mock database, registers a custom email-uniqueness validator, configures the HTTP routes and middleware, and starts the server on :8080.
+//
+// It prints startup information and example curl commands demonstrating a failing request for an existing email and a passing request for a new email.
 func main() {
 	// 1. Initialize our "Database"
 	db := &MockDatabase{
@@ -77,6 +81,8 @@ func main() {
 	srv.Start(context.Background())
 }
 
+// handleRegister writes a JSON success response containing the validated UserRegistrationDTO extracted from the request context.
+// It reads the validated data from r.Context() using router.ValidationKey (expected to hold a *UserRegistrationDTO) and encodes a JSON object with "status", "message", and "data".
 func handleRegister(w http.ResponseWriter, r *http.Request) {
 	data := r.Context().Value(router.ValidationKey).(*UserRegistrationDTO)
 
