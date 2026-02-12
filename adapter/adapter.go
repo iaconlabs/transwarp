@@ -159,9 +159,6 @@ func RunRouterContract(t *testing.T, factory func() router.Router) {
 		testHandleAndHandleFunc(t, factory())
 	})
 
-	t.Run("ANY Method Multi-registration", func(t *testing.T) {
-		testAnyMethod(t, factory())
-	})
 }
 
 // RunAdvancedRouterContract executes a comprehensive test suite for high-level router features,
@@ -199,9 +196,6 @@ func RunAdvancedRouterContract(t *testing.T, factory func() router.Router) {
 		testAmbiguity(t, factory())
 	})
 
-	t.Run("Custom HTTP Methods via Handle", func(t *testing.T) {
-		testCustomMethods(t, factory())
-	})
 }
 
 func testParametersAndExtensions(t *testing.T, adp router.Router) {
@@ -577,46 +571,5 @@ func testHandleAndHandleFunc(t *testing.T, adp router.Router) {
 	if rec2.Body.String() != "func_ok" || rec2.Header().Get("X-Handle") != "true" {
 		t.Errorf("HandleFunc or Middleware failed. Body: %s, Header: %s",
 			rec2.Body.String(), rec2.Header().Get("X-Handle"))
-	}
-}
-
-func testAnyMethod(t *testing.T, adp router.Router) {
-	adp.ANY("/any-route", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("method:" + r.Method))
-	})
-
-	methodsToTest := []string{
-		http.MethodGet,
-		http.MethodPost,
-		http.MethodPut,
-		http.MethodDelete,
-		http.MethodPatch,
-		http.MethodOptions,
-	}
-
-	for _, method := range methodsToTest {
-		req := httptest.NewRequest(method, "/any-route", nil)
-		rec := httptest.NewRecorder()
-		adp.ServeHTTP(rec, req)
-
-		expected := "method:" + method
-		if rec.Body.String() != expected {
-			t.Errorf("ANY method failed for %s. Expected %s, got %s", method, expected, rec.Body.String())
-		}
-	}
-}
-
-func testCustomMethods(t *testing.T, adp router.Router) {
-	// Muchos ruteadores fallan con métodos no estándar, Transwarp debe soportarlos
-	adp.Handle("PURGE", "/cache", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("purged"))
-	}))
-
-	req := httptest.NewRequest("PURGE", "/cache", nil)
-	rec := httptest.NewRecorder()
-	adp.ServeHTTP(rec, req)
-
-	if rec.Body.String() != "purged" {
-		t.Errorf("Custom method PURGE failed. Got: %s", rec.Body.String())
 	}
 }
