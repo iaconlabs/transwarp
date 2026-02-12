@@ -15,7 +15,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22' # Versión mínima para el nuevo Mux de Transwarp
+          go-version: '1.25' # Versión mínima para el nuevo Mux de Transwarp
           cache: true
 
       - name: golangci-lint
@@ -34,7 +34,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.25'
           cache: true
 
       - name: Run Tests
