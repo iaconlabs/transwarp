@@ -1,6 +1,6 @@
 # Transwarp Automation Makefile
 
-.PHONY: help dev-on dev-off release bundle
+.PHONY: help dev-on dev-off release bundle test-all bench-all
 
 ARGS ?=
 
