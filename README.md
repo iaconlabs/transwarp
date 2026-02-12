@@ -36,73 +36,50 @@ go get github.com/iaconlabs/transwarp
 ### 2. Basic Examples
 
 
-#### 2.1 Using Mux (Go  1.22+)
 
-```go
-package main
+#### 2.1 Using Gin
 
-import (
-	"context"
-	"net/http"
-	"time"
+```Go
 
-	"github.com/iaconlabs/transwarp/adapter/muxadapter"
-	"github.com/iaconlabs/transwarp/server"
-)
+type UserDTO struct {
+	ID    string `param:"id" validate:"required"`
+	Name  string `json:"name" validate:"required,min=3"`
+	Email string `json:"email" validate:"required,email"`
+}
 
 func main() {
-	// 1. Initialize the Standard Mux (Go 1.22+)
-	mux := http.NewServeMux()
-	
-	// 2. Wrap it with the Mux Adapter
-	adp := muxadapter.New(mux)
 
-	// 3. Define routes with parameters using the unified API
-	adp.GET("/hello/{name}", func(w http.ResponseWriter, r *http.Request) {
-		name := adp.Param(r, "name")
+	// 2. Wrap it with the Transwarp Adapter.
+	adp := ginadapter.NewGinAdapter()
+
+	// 3. Define routes using Transwarp's unified API.
+	adp.GET("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Hello, " + name + "!"))
+		_, _ = w.Write([]byte("OK"))
 	})
 
-	// 4. Start the managed server with graceful shutdown
+	// Group with validation middleware.
+	api := adp.Group("/api/v1")
+
+	api.POST("/users/:id", func(w http.ResponseWriter, r *http.Request) {
+		// Retrieve validated data from context.
+		user := r.Context().Value("transwarp_val").(*UserDTO)
+
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"message": "User %s created", "data": %+v}`, user.ID, user)
+	}, middleware.Validate(UserDTO{}))
+
+	// 4. Start the server using Transwarp's managed server.
 	srv := server.New(server.Config{
-		Addr: ":8080",
+		Addr:         ":8080",
+		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}, adp)
 
-	// In a real app, use a context that listens for OS signals
-	srv.Start(context.Background())
-}
-```
-
-#### 2.2 Using Gin
-
-```Go
-package main
-
-import (
-	"net/http"
-	"github.com/gin-gonic/gin"
-	"github.com/iaconlabs/transwarp/adapter/ginadapter"
-	"github.com/iaconlabs/transwarp/server"
-)
-
-func main() {
-	// Initialize your favorite framework
-	engine := gin.New()
-	
-	// Wrap it with a Transwarp Adapter
-	adp := ginadapter.New(engine)
-
-	// Define routes using the unified API
-	adp.GET("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Transwarp is active!"))
-	})
-
-	// Start the managed server
-	srv := server.New(server.Config{Addr: ":8080"}, adp)
-	srv.Start(context.Background())
+	fmt.Println("Example server running on http://localhost:8080 over  gin")
+	if err := srv.Start(context.Background()); err != nil {
+		fmt.Printf("Server failed: %v\n", err)
+	}
 }
 ```
 
