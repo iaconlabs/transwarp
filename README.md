@@ -138,7 +138,7 @@ Transwarp isn't just for heavy frameworks. With the Mux Adapter, you can leverag
 
 ## Modular Architecture (Multi-Module Monorepo)
 
-Transwarp utilizes a multi-module monorepo strategy where the Core, Adapters, and Middlewares are independent Go modules with their own go.mod. This ensures a minimal dependency footprint and allows for granular versioning. See the [Submodules Wiki] for details on local development using replace directives and our Git tagging convention. 
+Transwarp utilizes a multi-module monorepo strategy where the Core, Adapters, and Middlewares are independent Go modules with their own go.mod. This ensures a minimal dependency footprint and allows for granular versioning. See the [Submodules Wiki] for details on local development using replace directives and our Git tagging convention.
 
 More about this in the [wiki](https://github.com/iaconlabs/transwarp/wiki/Core-Architecture#submodule-architecture--versioning)
 
@@ -176,7 +176,7 @@ Usage:
 
   - `./tools/patch_mods.sh off`: Removes the replacements, preparing the code for a clean git commit and remote publishing.
 
-2. ***tagger.sh*** 
+2. ***tagger.sh***
 
 The Problem: Since each sub-module has its own versioning, tagging them manually in Git is error-prone. To release version v1.2.3 of the Mux adapter, Git requires a tag named adapter/muxadapter/v1.2.3.
 
