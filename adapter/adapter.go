@@ -113,6 +113,7 @@ func RunMuxContract(t *testing.T, factory func() router.Router) {
 			t.Errorf("Error en prefijos de grupo. Obtenido: %s", rec.Body.String())
 		}
 	})
+
 }
 
 // RunRouterContract executes the core functional contract tests for any [router.Router].
@@ -144,6 +145,14 @@ func RunRouterContract(t *testing.T, factory func() router.Router) {
 
 	t.Run("Group Union Normalization", func(t *testing.T) {
 		testGroupNormalization(t, factory())
+	})
+
+	t.Run("Handle and HandleFunc Methods", func(t *testing.T) {
+		testHandleAndHandleFunc(t, factory())
+	})
+
+	t.Run("ANY Method Multi-registration", func(t *testing.T) {
+		testAnyMethod(t, factory())
 	})
 }
 
@@ -180,6 +189,10 @@ func RunAdvancedRouterContract(t *testing.T, factory func() router.Router) {
 
 	t.Run("Ambiguity Torture Test", func(t *testing.T) {
 		testAmbiguity(t, factory())
+	})
+
+	t.Run("Custom HTTP Methods via Handle", func(t *testing.T) {
+		testCustomMethods(t, factory())
 	})
 }
 
@@ -517,5 +530,85 @@ func testAmbiguity(t *testing.T, adp router.Router) {
 	adp.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/a/other/c", nil))
 	if rec2.Body.String() != "param:other" {
 		t.Errorf("Ambiguity failure (param). Got: %s", rec2.Body.String())
+	}
+}
+
+// 1. Probar Handle con un http.Handler estructurado
+type myHandlerForTests struct{}
+
+func (h *myHandlerForTests) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	_, _ = w.Write([]byte("handler_ok"))
+}
+
+func testHandleAndHandleFunc(t *testing.T, adp router.Router) {
+
+	adp.Handle(http.MethodGet, "/test/handle", &myHandlerForTests{})
+
+	// 2. Probar HandleFunc con middleware específico
+	mw := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Handle", "true")
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	adp.HandleFunc(http.MethodPost, "/test/handlefunc", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("func_ok"))
+	}, mw)
+
+	// Ejecución Test 1
+	rec1 := httptest.NewRecorder()
+	adp.ServeHTTP(rec1, httptest.NewRequest(http.MethodGet, "/test/handle", nil))
+	if rec1.Body.String() != "handler_ok" {
+		t.Errorf("Handle failed. Expected handler_ok, got %s", rec1.Body.String())
+	}
+
+	// Ejecución Test 2
+	rec2 := httptest.NewRecorder()
+	adp.ServeHTTP(rec2, httptest.NewRequest(http.MethodPost, "/test/handlefunc", nil))
+	if rec2.Body.String() != "func_ok" || rec2.Header().Get("X-Handle") != "true" {
+		t.Errorf("HandleFunc or Middleware failed. Body: %s, Header: %s",
+			rec2.Body.String(), rec2.Header().Get("X-Handle"))
+	}
+}
+
+func testAnyMethod(t *testing.T, adp router.Router) {
+	adp.ANY("/any-route", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("method:" + r.Method))
+	})
+
+	methodsToTest := []string{
+		http.MethodGet,
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodDelete,
+		http.MethodPatch,
+		http.MethodOptions,
+	}
+
+	for _, method := range methodsToTest {
+		req := httptest.NewRequest(method, "/any-route", nil)
+		rec := httptest.NewRecorder()
+		adp.ServeHTTP(rec, req)
+
+		expected := "method:" + method
+		if rec.Body.String() != expected {
+			t.Errorf("ANY method failed for %s. Expected %s, got %s", method, expected, rec.Body.String())
+		}
+	}
+}
+
+func testCustomMethods(t *testing.T, adp router.Router) {
+	// Muchos ruteadores fallan con métodos no estándar, Transwarp debe soportarlos
+	adp.Handle("PURGE", "/cache", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("purged"))
+	}))
+
+	req := httptest.NewRequest("PURGE", "/cache", nil)
+	rec := httptest.NewRecorder()
+	adp.ServeHTTP(rec, req)
+
+	if rec.Body.String() != "purged" {
+		t.Errorf("Custom method PURGE failed. Got: %s", rec.Body.String())
 	}
 }

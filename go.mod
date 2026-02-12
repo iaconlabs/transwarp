@@ -2,8 +2,6 @@ module github.com/iaconlabs/transwarp
 
 go 1.25.7
 
-retract [v1.0.0, v1.0.3]
-
 require github.com/go-playground/validator/v10 v10.30.1
 
 require (

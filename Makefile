@@ -7,6 +7,17 @@ ARGS ?=
 # Default version for release
 VERSION ?= v0.0.1
 
+
+GOTEST := $(shell command -v gotest 2> /dev/null)
+
+ifdef GOTEST
+    TEST_CMD := gotest
+else
+    TEST_CMD := go test
+endif
+
+TEST_FLAGS := -race
+
 help: ## Show this help message
 	@echo 'Usage: make [target] [VERSION=vX.Y.Z]'
 	@echo ''
@@ -37,12 +48,13 @@ bundle: ## Consolidate project code for review or AI context
 	@bash ./tools/bundle_code.sh
 
 test-all: ## Run all tests. Usage: make test-all ARGS="-v"
-	@echo "🧪 Running all tests..."
-	@find . -name "go.mod" -execdir go test -timeout 300s $(ARGS) ./... \;
+	@echo "Using test command: $(TEST_CMD)"
+	@find . -name "go.mod" -execdir sh -c "$(TEST_CMD) $(TEST_FLAGS) ./..." \;
 
 bench-all: ## Run benchmarks for all modules
 	@echo "⚡ Running all benchmarks..."
-	@find . -name "go.mod" -execdir go test -bench=. -run=^$ -benchmem ./... \;
+	@find . -name "go.mod" -execdir go test -bench=. -run=^$ -benchmem $(ARGS) ./... \;
+
 
 update-deps: ## Update all dependencies to latest minor/patch versions
 	@echo "🆙 Updating dependencies in all modules..."

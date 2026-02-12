@@ -106,3 +106,17 @@ func (m *mockAdapter) DELETE(_ string, _ http.HandlerFunc, _ ...func(http.Handle
 func (m *mockAdapter) OPTIONS(_ string, _ http.HandlerFunc, _ ...func(http.Handler) http.Handler) {}
 func (m *mockAdapter) Use(_ ...func(http.Handler) http.Handler)                                   {}
 func (m *mockAdapter) Engine() any                                                                { return nil }
+
+// Handle registers the handler for the given pattern
+func (m *mockAdapter) Handle(method, pattern string, handler http.Handler, mws ...func(http.Handler) http.Handler) {
+
+}
+
+// HandleFunc register an ordinary function as an HTTP handler for a specific path in a web server
+func (m *mockAdapter) HandleFunc(method, pattern string, handlerFn http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+
+}
+
+func (m *mockAdapter) ANY(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+
+}

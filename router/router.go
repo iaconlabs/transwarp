@@ -41,6 +41,11 @@ type Router interface {
 	// OPTIONS registers a new OPTIONS route with optional middlewares.
 	OPTIONS(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler)
 
+	ANY(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler)
+
+	Handle(method, path string, h http.Handler, mws ...func(http.Handler) http.Handler)
+	HandleFunc(method, path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler)
+
 	// Use adds global middlewares to the adapter.
 	Use(mws ...func(http.Handler) http.Handler)
 	// Param retrieves a path parameter by its key from the given request.

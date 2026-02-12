@@ -115,6 +115,32 @@ func (a *MuxAdapter) OPTIONS(path string, h http.HandlerFunc, mws ...func(http.H
 	a.register(http.MethodOptions, path, h, mws...)
 }
 
+// Handle registers a new route with a specific http.Handler and optional middlewares.
+func (a *MuxAdapter) Handle(method, path string, h http.Handler, mws ...func(http.Handler) http.Handler) {
+	a.register(method, path, h.ServeHTTP, mws...)
+}
+
+// HandleFunc registers a new route with a http.HandlerFunc and optional middlewares.
+func (a *MuxAdapter) HandleFunc(method, path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	a.register(method, path, h, mws...)
+}
+
+// ANY registers the same handler for GET, POST, PUT, DELETE, PATCH and OPTIONS.
+func (a *MuxAdapter) ANY(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	methods := []string{
+		http.MethodGet,
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodDelete,
+		http.MethodPatch,
+		http.MethodOptions,
+	}
+
+	for _, method := range methods {
+		a.register(method, path, h, mws...)
+	}
+}
+
 func (a *MuxAdapter) Group(prefix string) router.Router {
 	mwsCopy := make([]func(http.Handler) http.Handler, len(a.middlewares))
 	copy(mwsCopy, a.middlewares)

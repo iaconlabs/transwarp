@@ -154,6 +154,32 @@ func (a *GinAdapter) OPTIONS(p string, h http.HandlerFunc, m ...func(http.Handle
 	a.register(http.MethodOptions, p, h, m...)
 }
 
+// Handle registers a new route with a specific http.Handler and optional middlewares.
+func (a *GinAdapter) Handle(method, path string, h http.Handler, mws ...func(http.Handler) http.Handler) {
+	a.register(method, path, h.ServeHTTP, mws...)
+}
+
+// HandleFunc registers a new route with a http.HandlerFunc and optional middlewares.
+func (a *GinAdapter) HandleFunc(method, path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	a.register(method, path, h, mws...)
+}
+
+// ANY registers the same handler for GET, POST, PUT, DELETE, PATCH and OPTIONS.
+func (a *GinAdapter) ANY(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	methods := []string{
+		http.MethodGet,
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodDelete,
+		http.MethodPatch,
+		http.MethodOptions,
+	}
+
+	for _, method := range methods {
+		a.register(method, path, h, mws...)
+	}
+}
+
 // Engine returns the underlying *gin.Engine instance.
 func (a *GinAdapter) Engine() any { return a.engine }
 
