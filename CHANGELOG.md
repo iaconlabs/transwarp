@@ -21,8 +21,6 @@ Added
 
   - Cross-Framework Bridge Documentation: Added specialized Wiki pages covering the FromGin, FromEcho, and FromFiber conversion logic and lifecycle.
 
-  - First-class OPTIONS support: Added the OPTIONS method to the Router interface and implemented it across all adapters (MuxAdapter, GinAdapter, FiberAdapter).
-
   - Developer Toolkit: Added a suite of automation scripts in tools/ for monorepo management:
 
       - patch_mods.sh: Manages local replace directives for seamless cross-module development.

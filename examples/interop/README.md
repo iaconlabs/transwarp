@@ -33,7 +33,7 @@ Verify that Echo's CORS middleware is working by sending a preflight request:
 
 ```Bash
 curl -i -X OPTIONS http://localhost:8080/interop \
-     -H "Origin: [http://example.com](http://example.com)" \
+     -H "Origin: http://example.com" \
      -H "Access-Control-Request-Method: GET"
 ```
 

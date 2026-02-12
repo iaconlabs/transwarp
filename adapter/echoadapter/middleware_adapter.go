@@ -16,8 +16,7 @@ func FromEcho(echoMw echo.MiddlewareFunc) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			//fmt.Printf("[DEBUG] Bridge: Petición %s %s recibida\n", r.Method, r.URL.Path)
-			// 1. Recuperar el estado
+
 			state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
 			if !ok {
 				state = &adapter.TranswarpState{Params: make(map[string]string)}
@@ -60,7 +59,7 @@ func FromEcho(echoMw echo.MiddlewareFunc) func(http.Handler) http.Handler {
 			c.SetRequest(r.WithContext(ctx))
 
 			if err := echoMw(bridgeHandler)(c); err != nil {
-				//fmt.Printf("[DEBUG] Bridge: Echo devolvió error: %v\n", err)
+
 				e.HTTPErrorHandler(c, err)
 			}
 		})
