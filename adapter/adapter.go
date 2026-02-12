@@ -40,6 +40,14 @@ func RunMuxContract(t *testing.T, factory func() router.Router) {
 			}
 		})
 
+		adapter.GET("/clients/:id.json", func(w http.ResponseWriter, r *http.Request) {
+			id := adapter.Param(r, "id.json")
+			if _, err := w.Write([]byte("file:" + id)); err != nil {
+				t.Log(err)
+				panic(err)
+			}
+		})
+
 		// Caso 1: ID Simple
 		req1 := httptest.NewRequest(http.MethodGet, "/user/123", nil)
 		rec1 := httptest.NewRecorder()

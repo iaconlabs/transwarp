@@ -12,6 +12,7 @@ Transwarp is a lightweight Go library designed to bridge the gap between standar
   - Low-Cost Abstraction: We tried hard to minimize overhead and memory allocations.
   - Managed Server: Built-in lifecycle management with graceful shutdown support.
   - Unified Middleware: Shared middleware system compatible with all adapters.
+  - Idiomatic State Management: New helper functions to manage request-scoped data safely.
   - Hybrid Validation: Integrated binding that merges path parameters and JSON bodies seamlessly.
 
 
@@ -31,6 +32,40 @@ Transwarp is a lightweight Go library designed to bridge the gap between standar
 ```Bash
 go get github.com/iaconlabs/transwarp
 ```
+
+
+### 2. State Management (New in v0.0.12)
+
+Transwarp now provides a clean, decoupled way to handle request state (params, user data, etc.) without interacting directly with the context keys.
+
+
+```go
+func MyMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        // 1. Set a value in the state
+        r = transwarp.SetStateValue(r, "tenant_id", "c-99")
+
+        next.ServeHTTP(w, r)
+    })
+}
+
+func MyHandler(w http.ResponseWriter, r *http.Request) {
+    // 2. Retrieve state safely with the comma-ok idiom
+    state, ok := transwarp.RequestState(r)
+    if ok {
+        tenant := state.Params["tenant_id"]
+        fmt.Fprint(w, tenant)
+    }
+}
+```
+
+
+### 3. State Management (New in v0.0.12)
+
+Transwarp now provides a clean, decoupled way to handle request state (params, user data, etc.) without interacting directly with the context keys.
+
+
+
 
 
 ### 2. Basic Examples
