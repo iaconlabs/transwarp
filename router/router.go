@@ -41,6 +41,7 @@ type Router interface {
 	// OPTIONS registers a new OPTIONS route with optional middlewares.
 	OPTIONS(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler)
 
+	// ANY registers a route with optional middlewares in all supported methods
 	ANY(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler)
 
 	Handle(method, path string, h http.Handler, mws ...func(http.Handler) http.Handler)
