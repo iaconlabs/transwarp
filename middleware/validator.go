@@ -17,6 +17,15 @@ import (
 	"github.com/profe-ajedrez/transwarp/router"
 )
 
+// Internal singleton instance to allow custom tag registration.
+var defaultValidator = validator.New()
+
+// GetValidator returns the shared validator instance used by the Validate middleware.
+// Use this to register custom validation tags or translations.
+func GetValidator() *validator.Validate {
+	return defaultValidator
+}
+
 // ValidationError represents a specific validation failure for a field.
 // It is intended to be returned as part of a structured JSON response.
 type ValidationError struct {
@@ -34,7 +43,6 @@ type ValidationError struct {
 // with detailed error information. If successful, the validated data is stored
 // in the request context under router.ValidationKey.
 func Validate[T any](_ T) func(http.Handler) http.Handler {
-	validate := validator.New()
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// 1. Retrieve the Transwarp state injected by the adapter.
@@ -59,7 +67,7 @@ func Validate[T any](_ T) func(http.Handler) http.Handler {
 			mapPathParams(target, state.Params)
 
 			// 5. VALIDATION: Execute rules from go-playground/validator.
-			if err := validate.Struct(target); err != nil {
+			if err := defaultValidator.Struct(target); err != nil {
 				details := formatValidationErrors(err)
 				sendDetailedError(w, details)
 				return

@@ -124,15 +124,23 @@ func (a *EchoAdapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (a *EchoAdapter) GET(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
 	a.register(http.MethodGet, p, h, m...)
 }
+
 func (a *EchoAdapter) POST(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
 	a.register(http.MethodPost, p, h, m...)
 }
+
 func (a *EchoAdapter) PUT(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
-	a.register("PUT", p, h, m...)
+	a.register(http.MethodPut, p, h, m...)
 }
+
 func (a *EchoAdapter) DELETE(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
-	a.register("DELETE", p, h, m...)
+	a.register(http.MethodDelete, p, h, m...)
 }
+
+func (a *EchoAdapter) OPTIONS(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register(http.MethodOptions, p, h, m...)
+}
+
 func (a *EchoAdapter) Engine() any { return a.instance }
 
 func (a *EchoAdapter) registerAll() {

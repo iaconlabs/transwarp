@@ -157,21 +157,6 @@ func (d *directResponseWriter) Header() http.Header         { return d.w.Header(
 func (d *directResponseWriter) Write(p []byte) (int, error) { return d.w.Write(p) }
 func (d *directResponseWriter) WriteHeader(s int)           { d.w.WriteHeader(s) }
 
-// func (a *FiberAdapter) transformPathForFiber(path string) string {
-// 	if strings.Contains(path, "*") {
-// 		return path[:strings.Index(path, "*")+1]
-// 	}
-// 	parts := strings.Split(path, "/")
-// 	for i, part := range parts {
-// 		if strings.HasPrefix(part, ":") {
-// 			if dotIdx := strings.Index(part, "."); dotIdx != -1 {
-// 				parts[i] = part[:dotIdx]
-// 			}
-// 		}
-// 	}
-// 	return strings.Join(parts, "/")
-// }
-
 func (a *FiberAdapter) transformPathForFiber(path string) string {
 	segments := strings.Split(path, "/")
 	for i, seg := range segments {
@@ -189,24 +174,6 @@ func (a *FiberAdapter) transformPathForFiber(path string) string {
 	}
 	return strings.Join(segments, "/")
 }
-
-// func (a *FiberAdapter) Param(r *http.Request, key string) string {
-// 	state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
-// 	if !ok || state.Params == nil {
-// 		return ""
-// 	}
-
-// 	if val, ok := state.Params[key]; ok {
-// 		return val
-// 	}
-
-// 	// Fallback para extensiones (ej: :id -> id.json)
-// 	cleanKey := key
-// 	if dotIdx := strings.Index(key, "."); dotIdx != -1 {
-// 		cleanKey = key[:dotIdx]
-// 	}
-// 	return state.Params[cleanKey]
-// }
 
 func (a *FiberAdapter) Param(r *http.Request, key string) string {
 	state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
@@ -260,6 +227,11 @@ func (a *FiberAdapter) PUT(p string, h http.HandlerFunc, m ...func(http.Handler)
 func (a *FiberAdapter) DELETE(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
 	a.register("DELETE", p, h, m...)
 }
+
+func (a *FiberAdapter) OPTIONS(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register(http.MethodOptions, p, h, m...)
+}
+
 func (a *FiberAdapter) register(m, p string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
 	fullPath := a.prefix + "/" + strings.TrimPrefix(p, "/")
 	fullPath = strings.ReplaceAll(fullPath, "//", "/")

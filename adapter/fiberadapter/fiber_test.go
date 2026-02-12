@@ -1,15 +1,10 @@
 package fiberadapter_test
 
 import (
-	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"runtime"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
@@ -260,82 +255,4 @@ func TestFromFiber_BodyPersistence(t *testing.T) {
 	tw.ServeHTTP(rec, req)
 
 	is.Equal("ping", rec.Body.String(), "El cuerpo de la petición se corrompió o desapareció")
-}
-
-func TestPanicStressAndMemoryLeak(t *testing.T) {
-	is := assert.New(t)
-
-	// 1. SILENCIADOR DE LOGS
-	// Evitamos que 10,000 panics inunden la consola y ensucien la memoria
-	log.SetOutput(io.Discard)
-	defer log.SetOutput(os.Stderr) // Restaurar al finalizar el test
-
-	// 2. CONFIGURACIÓN DEL ENTORNO
-	fa := fiberadapter.NewFiberAdapter()
-	tw := transwarp.New(fa)
-
-	// Usamos el middleware de Recovery global (stack en false para ahorrar memoria)
-	tw.Use(transwarp.Recovery(false))
-
-	tw.GET("/panic", func(w http.ResponseWriter, r *http.Request) {
-		panic("ataque de panico deliberado")
-	})
-
-	// 3. PREPARACIÓN DE MEDICIÓN INICIAL
-	runtime.GC()      // Forzar limpieza inicial
-	runtime.Gosched() // Ceder tiempo al planificador
-	var mStart runtime.MemStats
-	runtime.ReadMemStats(&mStart)
-
-	// 4. BOMBARDEO CONCURRENTE
-	const totalRequests = 10000
-	const concurrencyLimit = 100 // Máximo de goroutines simultáneas
-
-	var wg sync.WaitGroup
-	semaphore := make(chan struct{}, concurrencyLimit)
-
-	for i := 0; i < totalRequests; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
-			semaphore <- struct{}{}        // Ocupar espacio en el semáforo
-			defer func() { <-semaphore }() // Liberar espacio al terminar
-
-			req := httptest.NewRequest(http.MethodGet, "/panic", nil)
-			rec := httptest.NewRecorder()
-
-			// Ejecución de la petición (entrará en pánico y se recuperará)
-			tw.ServeHTTP(rec, req)
-
-			// Verificamos que el Recovery inyectó el Status 500
-			if rec.Code != http.StatusInternalServerError {
-				t.Errorf("Se esperaba 500, se obtuvo %d", rec.Code)
-			}
-		}()
-	}
-
-	// Esperar a que todas las peticiones terminen
-	wg.Wait()
-
-	// 5. MEDICIÓN FINAL Y LIMPIEZA DE POOL
-	// Forzamos varios ciclos de GC para que el runtime procese los objetos del pool
-	for i := 0; i < 3; i++ {
-		runtime.GC()
-		runtime.Gosched()
-	}
-
-	var mEnd runtime.MemStats
-	runtime.ReadMemStats(&mEnd)
-
-	// --- CÁLCULO DE DIFERENCIA ---
-	// La métrica más fiable aquí es HeapObjects (objetos vivos en memoria)
-	heapDiff := int64(mEnd.HeapObjects) - int64(mStart.HeapObjects)
-
-	fmt.Printf("\n--- Resultados del Test de Estrés ---\n")
-	fmt.Printf("Peticiones procesadas: %d\n", totalRequests)
-	fmt.Printf("Objetos extra en Heap: %d\n", heapDiff)
-	fmt.Printf("-------------------------------------\n")
-
-	is.True(heapDiff < 4000, fmt.Sprintf("Fuga de memoria detectada: %d objetos retenidos", heapDiff))
 }

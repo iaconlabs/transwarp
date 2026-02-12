@@ -16,7 +16,7 @@ func FromEcho(echoMw echo.MiddlewareFunc) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// 1. Recuperar el estado
+
 			state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
 			if !ok {
 				state = &adapter.TranswarpState{Params: make(map[string]string)}
@@ -48,6 +48,8 @@ func FromEcho(echoMw echo.MiddlewareFunc) func(http.Handler) http.Handler {
 				if n, ok := currentReq.Context().Value(router.NextKey).(http.Handler); ok {
 					n.ServeHTTP(c.Response(), currentReq)
 				}
+
+				//fmt.Println("[DEBUG] Bridge: Echo pasó el control al siguiente handler")
 				return nil
 			}
 
@@ -57,6 +59,7 @@ func FromEcho(echoMw echo.MiddlewareFunc) func(http.Handler) http.Handler {
 			c.SetRequest(r.WithContext(ctx))
 
 			if err := echoMw(bridgeHandler)(c); err != nil {
+
 				e.HTTPErrorHandler(c, err)
 			}
 		})

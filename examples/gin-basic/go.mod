@@ -3,10 +3,10 @@ module github.com/profe-ajedrez/transwarp/examples/gin-basic
 go 1.25.7
 
 // 1. Reemplazo para el Core
-replace github.com/profe-ajedrez/transwarp => ../../
+// replace github.com/profe-ajedrez/transwarp => ../../
 
 // 2. Reemplazo para el Adaptador (Importante)
-replace github.com/profe-ajedrez/transwarp/adapter/ginadapter => ../../adapter/ginadapter
+// replace github.com/profe-ajedrez/transwarp/adapter/ginadapter => ../../adapter/ginadapter
 
 require (
 	github.com/profe-ajedrez/transwarp v0.0.0
