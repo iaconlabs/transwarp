@@ -1,13 +1,17 @@
 package fiberadapter
 
 import (
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/profe-ajedrez/transwarp"
 	"github.com/profe-ajedrez/transwarp/adapter"
+
 	"github.com/profe-ajedrez/transwarp/router"
 	"github.com/valyala/fasthttp"
 )
@@ -120,4 +124,30 @@ func BenchmarkFiberV3_Transwarp(b *testing.B) {
 func transwarpHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+func BenchmarkRecoveryMemory(b *testing.B) {
+	// 1. SILENCIADOR DE LOGS
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(os.Stderr)
+
+	// 2. CONFIGURACIÓN
+	fa := NewFiberAdapter()
+	tw := transwarp.New(fa)
+	tw.Use(transwarp.Recovery(false)) // stack en false para medir solo el overhead del middleware
+
+	tw.GET("/panic", func(w http.ResponseWriter, r *http.Request) {
+		panic("benchmark panic")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/panic", nil)
+	rec := httptest.NewRecorder()
+
+	// 3. EJECUCIÓN DEL BENCHMARK
+	b.ReportAllocs() // Reportar B/op y allocs/op
+	b.ResetTimer()   // Ignorar el tiempo de configuración inicial
+
+	for range b.N {
+		tw.ServeHTTP(rec, req)
+	}
 }
