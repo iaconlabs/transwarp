@@ -24,9 +24,13 @@ dev-off: ## Unlink local modules for production/push (patch_mods off)
 	@echo "✅ Production mode enabled (remote dependencies)."
 
 release: dev-off ## Prepare a release by unlinking and tagging (Usage: make release VERSION=v1.0.0)
-	@echo "🏷️ Tagging version $(VERSION)..."
-	@bash ./tools/tagger.sh $(VERSION)
-	@echo "🚀 Version $(VERSION) tagged for all modules."
+	`@if` [ "$(origin VERSION)" = "default" ]; then \
+		echo "VERSION is required (e.g., make release VERSION=v1.2.3)"; \
+		exit 1; \
+	fi
+	`@echo` "🏷️ Tagging version $(VERSION)..."
+	`@bash` ./tools/tagger.sh $(VERSION)
+	`@echo` "🚀 Version $(VERSION) tagged for all modules."
 
 bundle: ## Consolidate project code for review or AI context
 	@echo "📦 Bundling codebase..."
