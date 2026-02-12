@@ -31,15 +31,15 @@ func main() {
 
 	// Group with validation middleware.
 	api := adp.Group("/api/v1")
-	{
-		api.POST("/users/:id", func(w http.ResponseWriter, r *http.Request) {
-			// Retrieve validated data from context.
-			user := r.Context().Value("transwarp_val").(*UserDTO)
+	
+	api.POST("/users/:id", func(w http.ResponseWriter, r *http.Request) {
+		// Retrieve validated data from context.
+		user := r.Context().Value("transwarp_val").(*UserDTO)
 
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"message": "User %s created", "data": %+v}`, user.ID, user)
-		}, middleware.Validate(UserDTO{}))
-	}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"message": "User %s created", "data": %+v}`, user.ID, user)
+	}, middleware.Validate(UserDTO{}))
+	
 
 	// 4. Start the server using Transwarp's managed server.
 	srv := server.New(server.Config{
