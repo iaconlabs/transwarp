@@ -8,8 +8,8 @@ go 1.25.7
 
 require (
 	github.com/go-playground/validator/v10 v10.30.1
-	github.com/iaconlabs/transwarp v0.0.2
-	github.com/iaconlabs/transwarp/adapter/muxadapter v0.0.2
+	github.com/iaconlabs/transwarp v0.0.3
+	github.com/iaconlabs/transwarp/adapter/muxadapter v0.0.4
 )
 
 require (

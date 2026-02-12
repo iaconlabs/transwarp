@@ -83,10 +83,10 @@ read -p "Opción: " COMP
 case $COMP in
     0) NAME="Core"; PREFIX="";;
     1) NAME="Echo"; PREFIX="adapter/echoadapter/";;
-    2) NAME="Fiber"; PREFIX="adapter/fiberadapter2/";;
+    2) NAME="Fiber"; PREFIX="adapter/fiberadapter/";;
     3) NAME="Gin"; PREFIX="adapter/ginadapter/";;
     4) NAME="Chi"; PREFIX="adapter/chiadapter/";;
-    5) NAME="Mux"; PREFIX="adapter/mux_adapter/";;
+    5) NAME="Mux"; PREFIX="adapter/muxadapter/";;
     *) echo -e "${RED}Opción inválida${NC}"; exit 1;;
 esac
 

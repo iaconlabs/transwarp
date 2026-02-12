@@ -6,7 +6,7 @@ go 1.25.7
 // replace github.com/iaconlabs/transwarp => ../../
 
 require (
-	github.com/iaconlabs/transwarp v0.0.2
+	github.com/iaconlabs/transwarp v0.0.3
 	github.com/labstack/echo/v5 v5.0.3
 )
 
