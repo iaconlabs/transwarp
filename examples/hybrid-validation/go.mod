@@ -7,7 +7,7 @@ go 1.25.7
 // replace github.com/iaconlabs/transwarp/adapter/muxadapter => ../../adapter/muxadapter
 
 require (
-	github.com/iaconlabs/transwarp v0.0.11
+	github.com/iaconlabs/transwarp v0.0.12
 	github.com/iaconlabs/transwarp/adapter/muxadapter v0.0.9
 )
 

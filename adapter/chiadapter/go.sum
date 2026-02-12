@@ -1,4 +1,4 @@
 github.com/go-chi/chi/v5 v5.2.5 h1:Eg4myHZBjyvJmAFjFvWgrqDTXFyOzjj7YIm3L3mu6Ug=
 github.com/go-chi/chi/v5 v5.2.5/go.mod h1:X7Gx4mteadT3eDOMTsXzmI4/rwUpOwBHLpAfupzFJP0=
-github.com/iaconlabs/transwarp v0.0.11 h1:08YSM9saEveyHwE/aAKT5KamAWlHJ1uqfpOtyGvfR1c=
-github.com/iaconlabs/transwarp v0.0.11/go.mod h1:Ci1k6Ona6czjonLVvV/HU0b7deDRthDICs/8VZI9lLY=
+github.com/iaconlabs/transwarp v0.0.12 h1:WVMJmDhEdi4shf29+jY2MTIkWWwIbtjETMonm0iwVtc=
+github.com/iaconlabs/transwarp v0.0.12/go.mod h1:Ci1k6Ona6czjonLVvV/HU0b7deDRthDICs/8VZI9lLY=
