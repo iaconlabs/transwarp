@@ -25,12 +25,18 @@ type ProductDTO struct {
 }
 
 // skuValidator is our custom business logic.
-// It ensures that SKUs always start with 'TW-' (Transwarp).
+// skuValidator validates that an SKU string starts with "TW-" (Transwarp).
+// It returns true if the field's string value starts with "TW-", false otherwise.
 func skuValidator(fl validator.FieldLevel) bool {
 	sku := fl.Field().String()
 	return strings.HasPrefix(sku, "TW-")
 }
 
+// main sets up and runs an example HTTP server that demonstrates a custom validation tag.
+// 
+// It registers the "sku_format" validation with the underlying validator, mounts a POST
+// /products endpoint that validates requests against ProductDTO, prints example curl
+// commands, and starts the Transwarp server on :8080.
 func main() {
 	// 1. Get the underlying validator engine from Transwarp middleware.
 	// Transwarp exposes the go-playground/validator instance.
@@ -58,6 +64,8 @@ func main() {
 	srv.Start(context.Background())
 }
 
+// handleCreate writes a JSON response containing the created product extracted from the request validation context.
+// It reads a *ProductDTO from r.Context().Value(router.ValidationKey), sets Content-Type to application/json, and encodes a response with keys "status" and "product".
 func handleCreate(w http.ResponseWriter, r *http.Request) {
 	data := r.Context().Value(router.ValidationKey).(*ProductDTO)
 	w.Header().Set("Content-Type", "application/json")

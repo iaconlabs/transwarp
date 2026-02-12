@@ -21,7 +21,8 @@ import (
 var defaultValidator = validator.New()
 
 // GetValidator returns the shared validator instance used by the Validate middleware.
-// Use this to register custom validation tags or translations.
+// GetValidator provides access to the package's shared validator instance used by the validation middleware.
+// Register custom validation tags or translations on the returned *validator.Validate; those registrations apply globally to middleware validation.
 func GetValidator() *validator.Validate {
 	return defaultValidator
 }
@@ -41,7 +42,8 @@ type ValidationError struct {
 // It unmarshals the JSON body into a new instance of T and maps path parameters
 // using the "param" struct tag. If validation fails, it returns a 422 Unprocessable Entity
 // with detailed error information. If successful, the validated data is stored
-// in the request context under router.ValidationKey.
+// Validate creates an HTTP middleware that binds an incoming request's JSON body and path parameters into a value of type T, validates that value with the package validator, and stores the validated value in the request context under router.ValidationKey.
+// On failure the middleware writes an appropriate HTTP error: 500 if the Transwarp state is missing, 400 for invalid JSON, or 422 for validation errors.
 func Validate[T any](_ T) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
