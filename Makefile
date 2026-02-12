@@ -38,4 +38,4 @@ test-all: ## Run all tests. Usage: make test-all ARGS="-v"
 
 bench-all: ## Run benchmarks for all modules
 	@echo "⚡ Running all benchmarks..."
-	@find . -name "go.mod" -execdir go test -bench=. -benchmem ./... \;
+	@find . -name "go.mod" -execdir go test -bench=. -run=^$ -benchmem ./... \;
