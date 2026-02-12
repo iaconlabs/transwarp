@@ -5,10 +5,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/iaconlabs/transwarp"
+	"github.com/iaconlabs/transwarp/adapter"
+	"github.com/iaconlabs/transwarp/router"
 	"github.com/labstack/echo/v5"
-	"github.com/profe-ajedrez/transwarp"
-	"github.com/profe-ajedrez/transwarp/adapter"
-	"github.com/profe-ajedrez/transwarp/router"
 )
 
 func BenchmarkEcho(b *testing.B) {

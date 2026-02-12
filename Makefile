@@ -43,3 +43,14 @@ test-all: ## Run all tests. Usage: make test-all ARGS="-v"
 bench-all: ## Run benchmarks for all modules
 	@echo "⚡ Running all benchmarks..."
 	@find . -name "go.mod" -execdir go test -bench=. -run=^$ -benchmem ./... \;
+
+update-deps: ## Update all dependencies to latest minor/patch versions
+	@echo "🆙 Updating dependencies in all modules..."
+	@find . -name "go.mod" -execdir go get -u ./... \;
+	@find . -name "go.mod" -execdir go mod tidy \;
+	@echo "✅ All modules updated and tidied."
+
+clean-sums: ## Remove all go.sum files recursively
+	@echo "🗑️ Removing all go.sum files..."
+	@find . -name "go.sum" -type f -delete
+	@echo "✅ go.sum files removed."

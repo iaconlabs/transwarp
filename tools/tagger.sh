@@ -22,7 +22,7 @@
 #
 # 3. POR QUÉ ESTA ESTRUCTURA:
 #    Esto permite que los usuarios importen solo lo que necesitan:
-#    go get github.com/profe-ajedrez/transwarp/adapter/echoadapter@v1.1.0
+#    go get github.com/iaconlabs/transwarp/adapter/echoadapter@v1.1.0
 #    Sin descargar las dependencias de Fiber, Gin o Chi.
 # ==============================================================================
 

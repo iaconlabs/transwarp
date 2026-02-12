@@ -23,7 +23,7 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-TARGET="replace github.com/profe-ajedrez/transwarp"
+TARGET="replace github.com/iaconlabs/transwarp"
 
 # Función para ejecutar go mod tidy en cada módulo encontrado
 run_tidy() {
@@ -38,14 +38,14 @@ run_tidy() {
 if [[ "$1" == "off" ]]; then
     echo -e "${YELLOW}Desactivando reemplazos locales (Modo Linting/Release)...${NC}"
     # Comenta la línea en adapter y examples
-    find ./adapter ./examples -name "go.mod" -exec sed -i "s|^replace github.com/profe-ajedrez/transwarp|// replace github.com/profe-ajedrez/transwarp|g" {} + 2>/dev/null
-    #run_tidy
+    find ./adapter ./examples -name "go.mod" -exec sed -i "s|^replace github.com/iaconlabs/transwarp|// replace github.com/iaconlabs/transwarp|g" {} + 2>/dev/null
+    run_tidy
     echo -e "${GREEN}¡Operación completada! Reemplazos comentados.${NC}"
 
 elif [[ "$1" == "on" ]]; then
     echo -e "${CYAN}Activando reemplazos locales (Modo Desarrollo)...${NC}"
     # Descomenta la línea en adapter y examples
-	find ./adapter ./examples -name "go.mod" -exec sed -i "s|^// replace github.com/profe-ajedrez/transwarp|replace github.com/profe-ajedrez/transwarp|g" {} + 2>/dev/null
+	find ./adapter ./examples -name "go.mod" -exec sed -i "s|^// replace github.com/iaconlabs/transwarp|replace github.com/iaconlabs/transwarp|g" {} + 2>/dev/null
     run_tidy
     echo -e "${GREEN}¡Operación completada! Reemplazos activos.${NC}"
 

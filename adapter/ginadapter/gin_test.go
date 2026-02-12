@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/profe-ajedrez/transwarp/adapter"
-	"github.com/profe-ajedrez/transwarp/adapter/ginadapter"
-	"github.com/profe-ajedrez/transwarp/router"
+	"github.com/iaconlabs/transwarp/adapter"
+	"github.com/iaconlabs/transwarp/adapter/ginadapter"
+	"github.com/iaconlabs/transwarp/router"
 )
 
 func TestAdapter_Compliance(t *testing.T) {

@@ -1,16 +1,16 @@
-module github.com/profe-ajedrez/transwarp/examples/gin-basic
+module github.com/iaconlabs/transwarp/examples/gin-basic
 
 go 1.25.7
 
 // 1. Reemplazo para el Core
-// replace github.com/profe-ajedrez/transwarp => ../../
+// replace github.com/iaconlabs/transwarp => ../../
 
 // 2. Reemplazo para el Adaptador (Importante)
-// replace github.com/profe-ajedrez/transwarp/adapter/ginadapter => ../../adapter/ginadapter
+// replace github.com/iaconlabs/transwarp/adapter/ginadapter => ../../adapter/ginadapter
 
 require (
-	github.com/profe-ajedrez/transwarp v0.0.0
-	github.com/profe-ajedrez/transwarp/adapter/ginadapter v0.0.0
+	github.com/iaconlabs/transwarp v0.0.1
+	github.com/iaconlabs/transwarp/adapter/ginadapter v0.0.1
 )
 
 require (

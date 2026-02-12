@@ -8,11 +8,11 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/iaconlabs/transwarp/adapter/echoadapter"
+	"github.com/iaconlabs/transwarp/adapter/ginadapter"
+	"github.com/iaconlabs/transwarp/adapter/muxadapter"
+	"github.com/iaconlabs/transwarp/server"
 	echoMid "github.com/labstack/echo/v5/middleware"
-	"github.com/profe-ajedrez/transwarp/adapter/echoadapter"
-	"github.com/profe-ajedrez/transwarp/adapter/ginadapter"
-	"github.com/profe-ajedrez/transwarp/adapter/muxadapter"
-	"github.com/profe-ajedrez/transwarp/server"
 )
 
 func main() {

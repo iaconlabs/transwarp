@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
-	"github.com/profe-ajedrez/transwarp/router"
+	"github.com/iaconlabs/transwarp/router"
 )
 
 // clone fuerza una asignación física de memoria para el string.

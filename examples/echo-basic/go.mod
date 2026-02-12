@@ -1,15 +1,15 @@
-module github.com/profe-ajedrez/transwarp/examples/echo-basic
+module github.com/iaconlabs/transwarp/examples/echo-basic
 
 go 1.25.7
 
 // Reemplazos para desarrollo local
-// replace github.com/profe-ajedrez/transwarp => ../../
+// replace github.com/iaconlabs/transwarp => ../../
 
-// replace github.com/profe-ajedrez/transwarp/adapter/echoadapter => ../../adapter/echoadapter
+// replace github.com/iaconlabs/transwarp/adapter/echoadapter => ../../adapter/echoadapter
 
 require (
-	github.com/profe-ajedrez/transwarp v0.0.0-00010101000000-000000000000
-	github.com/profe-ajedrez/transwarp/adapter/echoadapter v0.0.0-00010101000000-000000000000
+	github.com/iaconlabs/transwarp v0.0.1-00010101000000-000000000000
+	github.com/iaconlabs/transwarp/adapter/echoadapter v0.0.2-00010101000000-000000000000
 )
 
 require (

@@ -1,4 +1,4 @@
-module github.com/profe-ajedrez/transwarp
+module github.com/iaconlabs/transwarp
 
 go 1.25.7
 

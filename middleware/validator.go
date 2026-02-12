@@ -13,8 +13,8 @@ import (
 
 	"github.com/go-playground/validator/v10"
 
-	"github.com/profe-ajedrez/transwarp/adapter"
-	"github.com/profe-ajedrez/transwarp/router"
+	"github.com/iaconlabs/transwarp/adapter"
+	"github.com/iaconlabs/transwarp/router"
 )
 
 // Internal singleton instance to allow custom tag registration.

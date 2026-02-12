@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/profe-ajedrez/transwarp/adapter"
-	"github.com/profe-ajedrez/transwarp/router"
+	"github.com/iaconlabs/transwarp/adapter"
+	"github.com/iaconlabs/transwarp/router"
 )
 
 // ChiAdapter implements router.Router using the chi v5 router.

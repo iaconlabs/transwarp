@@ -26,7 +26,7 @@ Transwarp is a lightweight Go library designed to bridge the gap between standar
 ### 1. Installation
 
 ```Bash
-go get github.com/profe-ajedrez/transwarp
+go get github.com/iaconlabs/transwarp
 ```
 
 
@@ -43,8 +43,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/profe-ajedrez/transwarp/adapter/muxadapter"
-	"github.com/profe-ajedrez/transwarp/server"
+	"github.com/iaconlabs/transwarp/adapter/muxadapter"
+	"github.com/iaconlabs/transwarp/server"
 )
 
 func main() {
@@ -80,8 +80,8 @@ package main
 import (
 	"net/http"
 	"github.com/gin-gonic/gin"
-	"github.com/profe-ajedrez/transwarp/adapter/ginadapter"
-	"github.com/profe-ajedrez/transwarp/server"
+	"github.com/iaconlabs/transwarp/adapter/ginadapter"
+	"github.com/iaconlabs/transwarp/server"
 )
 
 func main() {
@@ -172,7 +172,7 @@ The Solution: This script toggles replace directives in all go.mod files across 
 
 Usage:
 
-  - `./tools/patch_mods.sh on`: Replaces remote imports with local paths (e.g., replace github.com/profe-ajedrez/transwarp => ../../).
+  - `./tools/patch_mods.sh on`: Replaces remote imports with local paths (e.g., replace github.com/iaconlabs/transwarp => ../../).
 
   - `./tools/patch_mods.sh off`: Removes the replacements, preparing the code for a clean git commit and remote publishing.
 

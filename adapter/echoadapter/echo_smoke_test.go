@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/profe-ajedrez/transwarp/adapter/echoadapter"
-	"github.com/profe-ajedrez/transwarp/server"
+	"github.com/iaconlabs/transwarp/adapter/echoadapter"
+	"github.com/iaconlabs/transwarp/server"
 )
 
 func TestTranswarp_FullStack_SmokeTest_Echo(t *testing.T) {

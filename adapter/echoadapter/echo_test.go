@@ -10,11 +10,11 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/iaconlabs/transwarp/adapter"
+	"github.com/iaconlabs/transwarp/adapter/echoadapter"
+	"github.com/iaconlabs/transwarp/router"
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
-	"github.com/profe-ajedrez/transwarp/adapter"
-	"github.com/profe-ajedrez/transwarp/adapter/echoadapter"
-	"github.com/profe-ajedrez/transwarp/router"
 )
 
 func TestEchoV5Adapter_Compliance(t *testing.T) {

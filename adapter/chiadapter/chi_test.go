@@ -3,9 +3,9 @@ package chiadapter_test
 import (
 	"testing"
 
-	"github.com/profe-ajedrez/transwarp/adapter"
-	"github.com/profe-ajedrez/transwarp/adapter/chiadapter"
-	"github.com/profe-ajedrez/transwarp/router"
+	"github.com/iaconlabs/transwarp/adapter"
+	"github.com/iaconlabs/transwarp/adapter/chiadapter"
+	"github.com/iaconlabs/transwarp/router"
 )
 
 func TestChiAdapter_Compliance(t *testing.T) {

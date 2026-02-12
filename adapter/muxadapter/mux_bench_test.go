@@ -3,9 +3,9 @@ package muxadapter_test
 import (
 	"testing"
 
-	"github.com/profe-ajedrez/transwarp/adapter"
-	"github.com/profe-ajedrez/transwarp/adapter/muxadapter"
-	"github.com/profe-ajedrez/transwarp/router"
+	"github.com/iaconlabs/transwarp/adapter"
+	"github.com/iaconlabs/transwarp/adapter/muxadapter"
+	"github.com/iaconlabs/transwarp/router"
 )
 
 func BenchmarkMux(b *testing.B) {

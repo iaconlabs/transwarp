@@ -6,9 +6,9 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/iaconlabs/transwarp/adapter"
+	"github.com/iaconlabs/transwarp/router"
 	"github.com/labstack/echo/v5"
-	"github.com/profe-ajedrez/transwarp/adapter"
-	"github.com/profe-ajedrez/transwarp/router"
 )
 
 func FromEcho(echoMw echo.MiddlewareFunc) func(http.Handler) http.Handler {

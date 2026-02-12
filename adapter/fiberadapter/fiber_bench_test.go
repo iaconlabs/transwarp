@@ -9,10 +9,10 @@ import (
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
-	"github.com/profe-ajedrez/transwarp"
-	"github.com/profe-ajedrez/transwarp/adapter"
+	"github.com/iaconlabs/transwarp"
+	"github.com/iaconlabs/transwarp/adapter"
 
-	"github.com/profe-ajedrez/transwarp/router"
+	"github.com/iaconlabs/transwarp/router"
 	"github.com/valyala/fasthttp"
 )
 

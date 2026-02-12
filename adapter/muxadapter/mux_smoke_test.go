@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/profe-ajedrez/transwarp/adapter/muxadapter"
-	"github.com/profe-ajedrez/transwarp/server"
+	"github.com/iaconlabs/transwarp/adapter/muxadapter"
+	"github.com/iaconlabs/transwarp/server"
 )
 
 func TestTranswarp_FullStack_SmokeTest_Mux(t *testing.T) {

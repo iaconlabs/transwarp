@@ -1,22 +1,22 @@
-module github.com/profe-ajedrez/transwarp/examples/middleware-interop
+module github.com/iaconlabs/transwarp/examples/middleware-interop
 
 go 1.25.7
 
-// replace github.com/profe-ajedrez/transwarp => ../../
+// replace github.com/iaconlabs/transwarp => ../../
 
-// replace github.com/profe-ajedrez/transwarp/adapter/muxadapter => ../../adapter/muxadapter
+// replace github.com/iaconlabs/transwarp/adapter/muxadapter => ../../adapter/muxadapter
 
-// replace github.com/profe-ajedrez/transwarp/adapter/ginadapter => ../../adapter/ginadapter
+// replace github.com/iaconlabs/transwarp/adapter/ginadapter => ../../adapter/ginadapter
 
-// replace github.com/profe-ajedrez/transwarp/adapter/echoadapter => ../../adapter/echoadapter
+// replace github.com/iaconlabs/transwarp/adapter/echoadapter => ../../adapter/echoadapter
 
 require (
 	github.com/gin-gonic/gin v1.11.0
 	github.com/labstack/echo/v5 v5.0.3
-	github.com/profe-ajedrez/transwarp v0.0.0
-	github.com/profe-ajedrez/transwarp/adapter/echoadapter v0.0.0
-	github.com/profe-ajedrez/transwarp/adapter/ginadapter v0.0.0
-	github.com/profe-ajedrez/transwarp/adapter/muxadapter v0.0.0
+	github.com/iaconlabs/transwarp v0.0.1
+	github.com/iaconlabs/transwarp/adapter/echoadapter v0.0.2
+	github.com/iaconlabs/transwarp/adapter/ginadapter v0.0.1
+	github.com/iaconlabs/transwarp/adapter/muxadapter v0.0.1
 )
 
 require (

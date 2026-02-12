@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/profe-ajedrez/transwarp/router"
+	"github.com/iaconlabs/transwarp/router"
 )
 
 // RunSuiteBenchmarks executes a heavy performance battery to measure the overhead

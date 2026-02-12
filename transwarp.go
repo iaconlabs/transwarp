@@ -5,7 +5,7 @@ package transwarp
 import (
 	"net/http"
 
-	"github.com/profe-ajedrez/transwarp/router"
+	"github.com/iaconlabs/transwarp/router"
 )
 
 // Ensure Transwarp implements the RouterAdapter interface.

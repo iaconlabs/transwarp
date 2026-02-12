@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/profe-ajedrez/transwarp/adapter/ginadapter"
-	"github.com/profe-ajedrez/transwarp/server"
+	"github.com/iaconlabs/transwarp/adapter/ginadapter"
+	"github.com/iaconlabs/transwarp/server"
 )
 
 func TestTranswarp_FullStack_SmokeTest_Gin(t *testing.T) {

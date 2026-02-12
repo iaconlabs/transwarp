@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/profe-ajedrez/transwarp/adapter/ginadapter"
-	"github.com/profe-ajedrez/transwarp/middleware"
-	"github.com/profe-ajedrez/transwarp/server"
+	"github.com/iaconlabs/transwarp/adapter/ginadapter"
+	"github.com/iaconlabs/transwarp/middleware"
+	"github.com/iaconlabs/transwarp/server"
 )
 
 // UserDTO defines the structure for our example request.

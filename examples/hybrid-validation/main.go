@@ -8,10 +8,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/profe-ajedrez/transwarp/adapter/muxadapter"
-	"github.com/profe-ajedrez/transwarp/middleware"
-	"github.com/profe-ajedrez/transwarp/router"
-	"github.com/profe-ajedrez/transwarp/server"
+	"github.com/iaconlabs/transwarp/adapter/muxadapter"
+	"github.com/iaconlabs/transwarp/middleware"
+	"github.com/iaconlabs/transwarp/router"
+	"github.com/iaconlabs/transwarp/server"
 )
 
 // InventoryUpdateDTO demonstrates Transwarp's ability to merge data

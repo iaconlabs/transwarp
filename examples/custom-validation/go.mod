@@ -1,15 +1,15 @@
-module github.com/profe-ajedrez/transwarp/examples/custom-validation
+module github.com/iaconlabs/transwarp/examples/custom-validation
 
 go 1.25.7
 
-// replace github.com/profe-ajedrez/transwarp => ../../
+// replace github.com/iaconlabs/transwarp => ../../
 
-// replace github.com/profe-ajedrez/transwarp/adapter/muxadapter => ../../adapter/muxadapter
+// replace github.com/iaconlabs/transwarp/adapter/muxadapter => ../../adapter/muxadapter
 
 require (
 	github.com/go-playground/validator/v10 v10.30.1
-	github.com/profe-ajedrez/transwarp v0.0.0
-	github.com/profe-ajedrez/transwarp/adapter/muxadapter v0.0.0
+	github.com/iaconlabs/transwarp v0.0.1
+	github.com/iaconlabs/transwarp/adapter/muxadapter v0.0.1
 )
 
 require (

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/profe-ajedrez/transwarp/adapter/fiberadapter"
+	"github.com/iaconlabs/transwarp/adapter/fiberadapter"
 
-	"github.com/profe-ajedrez/transwarp/server"
+	"github.com/iaconlabs/transwarp/server"
 )
 
 func TestTranswarp_FullStack_SmokeTest_Fiber(t *testing.T) {

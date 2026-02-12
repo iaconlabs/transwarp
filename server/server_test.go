@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/profe-ajedrez/transwarp/router"
-	"github.com/profe-ajedrez/transwarp/server"
+	"github.com/iaconlabs/transwarp/router"
+	"github.com/iaconlabs/transwarp/server"
 )
 
 func TestServer_GracefulShutdown(t *testing.T) {

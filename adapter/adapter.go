@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/profe-ajedrez/transwarp/router"
+	"github.com/iaconlabs/transwarp/router"
 )
 
 const (

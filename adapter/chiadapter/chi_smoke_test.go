@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/profe-ajedrez/transwarp/adapter/chiadapter"
-	"github.com/profe-ajedrez/transwarp/server"
+	"github.com/iaconlabs/transwarp/adapter/chiadapter"
+	"github.com/iaconlabs/transwarp/server"
 )
 
 func TestTranswarp_Chi_FullStack_SmokeTest(t *testing.T) {
