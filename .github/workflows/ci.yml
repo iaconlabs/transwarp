@@ -21,7 +21,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v4
         with:
-          version: v2.8.0
+          version: latest
           # IMPORTANTE: Al ser un monorepo, necesitamos que revise todos los módulos
           args: --timeout=5m  ./...
 
