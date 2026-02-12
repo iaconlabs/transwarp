@@ -3,9 +3,9 @@ module github.com/profe-ajedrez/transwarp/examples/echo-basic
 go 1.25.7
 
 // Reemplazos para desarrollo local
-replace github.com/profe-ajedrez/transwarp => ../../
+// replace github.com/profe-ajedrez/transwarp => ../../
 
-replace github.com/profe-ajedrez/transwarp/adapter/echoadapter => ../../adapter/echoadapter
+// replace github.com/profe-ajedrez/transwarp/adapter/echoadapter => ../../adapter/echoadapter
 
 require (
 	github.com/profe-ajedrez/transwarp v0.0.0-00010101000000-000000000000

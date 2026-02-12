@@ -3,7 +3,7 @@ module github.com/profe-ajedrez/transwarp/adapter/ginadapter
 go 1.25.7
 
 // nolint:gomoddirectives
-replace github.com/profe-ajedrez/transwarp => ../../
+// replace github.com/profe-ajedrez/transwarp => ../../
 
 require (
 	github.com/gin-gonic/gin v1.11.0

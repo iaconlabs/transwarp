@@ -3,7 +3,7 @@ module github.com/profe-ajedrez/transwarp/adapter/fiberadapter
 go 1.25.7
 
 // nolint:gomoddirectives
-replace github.com/profe-ajedrez/transwarp => ../../
+// replace github.com/profe-ajedrez/transwarp => ../../
 
 require (
 	github.com/gofiber/fiber/v3 v3.0.0

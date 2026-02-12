@@ -2,13 +2,13 @@ module github.com/profe-ajedrez/transwarp/examples/middleware-interop
 
 go 1.25.7
 
-replace github.com/profe-ajedrez/transwarp => ../../
+// replace github.com/profe-ajedrez/transwarp => ../../
 
-replace github.com/profe-ajedrez/transwarp/adapter/muxadapter => ../../adapter/muxadapter
+// replace github.com/profe-ajedrez/transwarp/adapter/muxadapter => ../../adapter/muxadapter
 
-replace github.com/profe-ajedrez/transwarp/adapter/ginadapter => ../../adapter/ginadapter
+// replace github.com/profe-ajedrez/transwarp/adapter/ginadapter => ../../adapter/ginadapter
 
-replace github.com/profe-ajedrez/transwarp/adapter/echoadapter => ../../adapter/echoadapter
+// replace github.com/profe-ajedrez/transwarp/adapter/echoadapter => ../../adapter/echoadapter
 
 require (
 	github.com/gin-gonic/gin v1.11.0

@@ -39,7 +39,7 @@ if [[ "$1" == "off" ]]; then
     echo -e "${YELLOW}Desactivando reemplazos locales (Modo Linting/Release)...${NC}"
     # Comenta la línea en adapter y examples
     find ./adapter ./examples -name "go.mod" -exec sed -i "s|^replace github.com/profe-ajedrez/transwarp|// replace github.com/profe-ajedrez/transwarp|g" {} + 2>/dev/null
-    run_tidy
+    #run_tidy
     echo -e "${GREEN}¡Operación completada! Reemplazos comentados.${NC}"
 
 elif [[ "$1" == "on" ]]; then

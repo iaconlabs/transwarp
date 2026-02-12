@@ -2,9 +2,9 @@ module github.com/profe-ajedrez/transwarp/examples/hybrid-validation
 
 go 1.25.7
 
-replace github.com/profe-ajedrez/transwarp => ../../
+// replace github.com/profe-ajedrez/transwarp => ../../
 
-replace github.com/profe-ajedrez/transwarp/adapter/muxadapter => ../../adapter/muxadapter
+// replace github.com/profe-ajedrez/transwarp/adapter/muxadapter => ../../adapter/muxadapter
 
 require (
 	github.com/profe-ajedrez/transwarp v0.0.0

@@ -3,7 +3,7 @@ module github.com/profe-ajedrez/transwarp/adapter/echoadapter
 go 1.25.7
 
 // nolint:gomoddirectives
-replace github.com/profe-ajedrez/transwarp => ../../
+// replace github.com/profe-ajedrez/transwarp => ../../
 
 require (
 	github.com/labstack/echo/v5 v5.0.3

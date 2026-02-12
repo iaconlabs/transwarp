@@ -3,9 +3,9 @@ module github.com/profe-ajedrez/transwarp/examples/chi-basic
 go 1.25.7
 
 // Reemplazos para que el ejemplo use tu código local en lugar de GitHub
-replace github.com/profe-ajedrez/transwarp => ../../
+// replace github.com/profe-ajedrez/transwarp => ../../
 
-replace github.com/profe-ajedrez/transwarp/adapter/chiadapter => ../../adapter/chiadapter
+// replace github.com/profe-ajedrez/transwarp/adapter/chiadapter => ../../adapter/chiadapter
 
 require (
 	github.com/profe-ajedrez/transwarp v0.0.0
