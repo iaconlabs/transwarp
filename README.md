@@ -60,19 +60,11 @@ func MyHandler(w http.ResponseWriter, r *http.Request) {
 ```
 
 
-### 3. State Management (New in v0.0.12)
-
-Transwarp now provides a clean, decoupled way to handle request state (params, user data, etc.) without interacting directly with the context keys.
+### 3. Basic Examples
 
 
 
-
-
-### 2. Basic Examples
-
-
-
-#### 2.1 Using Gin
+#### 3.1 Using Gin
 
 ```Go
 type UserDTO struct {

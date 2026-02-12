@@ -30,8 +30,8 @@ github.com/goccy/go-yaml v1.19.2/go.mod h1:XBurs7gK8ATbW4ZPGKgcbrY1Br56PdM69F7Lk
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
 github.com/google/gofuzz v1.0.0/go.mod h1:dBl0BpW6vV/+mYPU4Po3pmUjxk6FQPldtuIdl/M65Eg=
-github.com/iaconlabs/transwarp v0.0.11 h1:08YSM9saEveyHwE/aAKT5KamAWlHJ1uqfpOtyGvfR1c=
-github.com/iaconlabs/transwarp v0.0.11/go.mod h1:Ci1k6Ona6czjonLVvV/HU0b7deDRthDICs/8VZI9lLY=
+github.com/iaconlabs/transwarp v0.0.12 h1:WVMJmDhEdi4shf29+jY2MTIkWWwIbtjETMonm0iwVtc=
+github.com/iaconlabs/transwarp v0.0.12/go.mod h1:Ci1k6Ona6czjonLVvV/HU0b7deDRthDICs/8VZI9lLY=
 github.com/iaconlabs/transwarp/adapter/ginadapter v0.0.9 h1:xqpHCUeBepXxSO7frdp0SaTGfithXDuedr2UmHc5kJY=
 github.com/iaconlabs/transwarp/adapter/ginadapter v0.0.9/go.mod h1:ziQRAyma6VrmX0/PmrxeVeLIniRMNJv8cSqAOFtKeQ0=
 github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
