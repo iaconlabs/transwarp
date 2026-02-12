@@ -44,6 +44,7 @@ type Router interface {
 	// ANY registers a route with optional middlewares in all supported methods
 	ANY(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler)
 
+	// Handle registers a http.Handler to the requested path
 	Handle(method, path string, h http.Handler, mws ...func(http.Handler) http.Handler)
 	// Handlefunc registers a http.HandlerFunc to the requested path
 	HandleFunc(method, path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler)
