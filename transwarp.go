@@ -3,8 +3,10 @@
 package transwarp
 
 import (
+	"context"
 	"net/http"
 
+	"github.com/iaconlabs/transwarp/adapter"
 	"github.com/iaconlabs/transwarp/router"
 )
 
@@ -86,4 +88,49 @@ func (t *Transwarp) HandleFunc(method, path string, h http.HandlerFunc, mws ...f
 
 func (t *Transwarp) ANY(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
 	t.adapter.ANY(path, h, mws...)
+}
+
+// RequestState devuelve el TranswarpState y un booleano que indica si se encontró.
+// Es la forma idiomática de acceder a los datos internos sin exponer la implementación del contexto.
+func RequestState(r *http.Request) (*adapter.TranswarpState, bool) {
+	state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
+	return state, ok
+}
+
+func SetStateValue(r *http.Request, key, value string) *http.Request {
+	state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
+
+	// Si el estado no existe o el puntero es nil, creamos uno nuevo
+	if !ok || state == nil {
+		state = &adapter.TranswarpState{
+			Params: make(map[string]string),
+		}
+	} else if state.Params == nil {
+		// Aseguramos que el mapa esté inicializado
+		state.Params = make(map[string]string)
+	}
+
+	// Escritura directa: segura gracias a la ejecución secuencial de middlewares
+	state.Params[key] = value
+
+	// Si el estado ya existía en el contexto, técnicamente no es obligatorio
+	// llamar a WithContext porque estamos modificando un puntero,
+	// pero es una BUENA PRÁCTICA devolverlo para mantener la consistencia de la API.
+	ctx := context.WithValue(r.Context(), router.StateKey, state)
+	return r.WithContext(ctx)
+}
+
+func DeleteStateValue(r *http.Request, key string) *http.Request {
+	state, ok := r.Context().Value(router.StateKey).(*adapter.TranswarpState)
+	if !ok || state == nil || state.Params == nil {
+		return r
+	}
+
+	// Eliminamos la llave del mapa
+	delete(state.Params, key)
+
+	// Aunque modificamos el puntero, devolvemos el request con el contexto
+	// para mantener la consistencia con SetStateValue.
+	ctx := context.WithValue(r.Context(), router.StateKey, state)
+	return r.WithContext(ctx)
 }
