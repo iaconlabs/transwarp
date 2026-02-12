@@ -199,8 +199,7 @@ Usage:
 
 ### 💡 Why we do this
 
-We follow the "Local-First, Remote-Ready" principle.  it.
-
+We follow the "Local-First, Remote-Ready" principle. 
 Note: Always remember to run patch_mods.sh off before pushing to the main branch to ensure the CI/CD pipeline uses clean, remote dependencies.
 
 
