@@ -40,7 +40,6 @@ go get github.com/iaconlabs/transwarp
 #### 2.1 Using Gin
 
 ```Go
-
 type UserDTO struct {
 	ID    string `param:"id" validate:"required"`
 	Name  string `json:"name" validate:"required,min=3"`

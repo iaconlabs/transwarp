@@ -5,7 +5,7 @@ All notable changes to the Transwarp project will be documented in this file.
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
 
-[Unreleased] - 2026-02-11
+[v0.0.4] - 2026-02-11
 
 Added
 

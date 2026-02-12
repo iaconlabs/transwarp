@@ -38,7 +38,7 @@ bundle: ## Consolidate project code for review or AI context
 
 test-all: ## Run all tests. Usage: make test-all ARGS="-v"
 	@echo "🧪 Running all tests..."
-	@find . -name "go.mod" -execdir go test -timeout 300s $(ARGS) ./... \;
+	@find . -name "go.mod" -execdir gotest -v -timeout 300s ./... \;
 
 bench-all: ## Run benchmarks for all modules
 	@echo "⚡ Running all benchmarks..."
