@@ -7,7 +7,7 @@ go 1.25.7
 
 require (
 	github.com/gofiber/fiber/v3 v3.0.0
-	github.com/iaconlabs/transwarp v0.0.1-00010101000000-000000000000
+	github.com/iaconlabs/transwarp v0.0.2
 	github.com/stretchr/testify v1.11.1
 	github.com/valyala/fasthttp v1.69.0
 )

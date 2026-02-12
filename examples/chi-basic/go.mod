@@ -8,7 +8,7 @@ go 1.25.7
 // replace github.com/iaconlabs/transwarp/adapter/chiadapter => ../../adapter/chiadapter
 
 require (
-	github.com/iaconlabs/transwarp v0.0.1
+	github.com/iaconlabs/transwarp v0.0.2
 	github.com/iaconlabs/transwarp/adapter/chiadapter v0.0.0
 )
 

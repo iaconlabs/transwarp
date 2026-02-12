@@ -8,8 +8,8 @@ go 1.25.7
 // replace github.com/iaconlabs/transwarp/adapter/echoadapter => ../../adapter/echoadapter
 
 require (
-	github.com/iaconlabs/transwarp v0.0.1-00010101000000-000000000000
-	github.com/iaconlabs/transwarp/adapter/echoadapter v0.0.2-00010101000000-000000000000
+	github.com/iaconlabs/transwarp v0.0.2-00010101000000-000000000000
+	github.com/iaconlabs/transwarp/adapter/echoadapter v0.0.3-00010101000000-000000000000
 )
 
 require (

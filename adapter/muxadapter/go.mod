@@ -5,4 +5,4 @@ go 1.25.7
 // nolint:gomoddirectives
 // replace github.com/iaconlabs/transwarp => ../../
 
-require github.com/iaconlabs/transwarp v0.0.1-00010101000000-000000000000
+require github.com/iaconlabs/transwarp v0.0.2
