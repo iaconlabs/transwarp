@@ -54,6 +54,10 @@ func (t *Transwarp) DELETE(path string, h http.HandlerFunc, mws ...func(http.Han
 	t.adapter.DELETE(path, h, mws...)
 }
 
+func (t *Transwarp) OPTIONS(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	t.adapter.OPTIONS(path, h, mws...)
+}
+
 // Use adds middlewares to the internal adapter.
 func (t *Transwarp) Use(mws ...func(http.Handler) http.Handler) {
 	t.adapter.Use(mws...)

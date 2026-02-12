@@ -150,6 +150,10 @@ func (a *GinAdapter) DELETE(p string, h http.HandlerFunc, m ...func(http.Handler
 	a.register(http.MethodDelete, p, h, m...)
 }
 
+func (a *GinAdapter) OPTIONS(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register(http.MethodOptions, p, h, m...)
+}
+
 // Engine returns the underlying *gin.Engine instance.
 func (a *GinAdapter) Engine() any { return a.engine }
 

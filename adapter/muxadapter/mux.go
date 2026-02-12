@@ -111,6 +111,10 @@ func (a *MuxAdapter) DELETE(path string, h http.HandlerFunc, mws ...func(http.Ha
 	a.register(http.MethodDelete, path, h, mws...)
 }
 
+func (a *MuxAdapter) OPTIONS(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler) {
+	a.register(http.MethodOptions, path, h, mws...)
+}
+
 func (a *MuxAdapter) Group(prefix string) router.Router {
 	mwsCopy := make([]func(http.Handler) http.Handler, len(a.middlewares))
 	copy(mwsCopy, a.middlewares)

@@ -96,12 +96,13 @@ type mockAdapter struct {
 	handler http.HandlerFunc
 }
 
-func (m *mockAdapter) ServeHTTP(w http.ResponseWriter, r *http.Request)                          { m.handler(w, r) }
-func (m *mockAdapter) Param(_ *http.Request, _ string) string                                    { return "" }
-func (m *mockAdapter) Group(_ string) router.Router                                              { return m }
-func (m *mockAdapter) GET(_ string, _ http.HandlerFunc, _ ...func(http.Handler) http.Handler)    {}
-func (m *mockAdapter) POST(_ string, _ http.HandlerFunc, _ ...func(http.Handler) http.Handler)   {}
-func (m *mockAdapter) PUT(_ string, _ http.HandlerFunc, _ ...func(http.Handler) http.Handler)    {}
-func (m *mockAdapter) DELETE(_ string, _ http.HandlerFunc, _ ...func(http.Handler) http.Handler) {}
-func (m *mockAdapter) Use(_ ...func(http.Handler) http.Handler)                                  {}
-func (m *mockAdapter) Engine() any                                                               { return nil }
+func (m *mockAdapter) ServeHTTP(w http.ResponseWriter, r *http.Request)                           { m.handler(w, r) }
+func (m *mockAdapter) Param(_ *http.Request, _ string) string                                     { return "" }
+func (m *mockAdapter) Group(_ string) router.Router                                               { return m }
+func (m *mockAdapter) GET(_ string, _ http.HandlerFunc, _ ...func(http.Handler) http.Handler)     {}
+func (m *mockAdapter) POST(_ string, _ http.HandlerFunc, _ ...func(http.Handler) http.Handler)    {}
+func (m *mockAdapter) PUT(_ string, _ http.HandlerFunc, _ ...func(http.Handler) http.Handler)     {}
+func (m *mockAdapter) DELETE(_ string, _ http.HandlerFunc, _ ...func(http.Handler) http.Handler)  {}
+func (m *mockAdapter) OPTIONS(_ string, _ http.HandlerFunc, _ ...func(http.Handler) http.Handler) {}
+func (m *mockAdapter) Use(_ ...func(http.Handler) http.Handler)                                   {}
+func (m *mockAdapter) Engine() any                                                                { return nil }

@@ -38,6 +38,8 @@ type Router interface {
 	PUT(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler)
 	// DELETE registers a new DELETE route with optional middlewares.
 	DELETE(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler)
+	// OPTIONS registers a new OPTIONS route with optional middlewares.
+	OPTIONS(path string, h http.HandlerFunc, mws ...func(http.Handler) http.Handler)
 
 	// Use adds global middlewares to the adapter.
 	Use(mws ...func(http.Handler) http.Handler)

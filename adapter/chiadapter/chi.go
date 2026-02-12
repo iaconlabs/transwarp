@@ -85,14 +85,21 @@ func (a *ChiAdapter) Group(prefix string) router.Router {
 func (a *ChiAdapter) GET(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
 	a.register(http.MethodGet, p, h, m...)
 }
+
 func (a *ChiAdapter) POST(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
 	a.register(http.MethodPost, p, h, m...)
 }
+
 func (a *ChiAdapter) PUT(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
 	a.register(http.MethodPut, p, h, m...)
 }
+
 func (a *ChiAdapter) DELETE(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
 	a.register(http.MethodDelete, p, h, m...)
+}
+
+func (a *ChiAdapter) OPTIONS(p string, h http.HandlerFunc, m ...func(http.Handler) http.Handler) {
+	a.register(http.MethodOptions, p, h, m...)
 }
 
 func (a *ChiAdapter) Engine() any { return a.mux }
