@@ -7,7 +7,7 @@ go 1.25.7
 
 require (
 	github.com/gin-gonic/gin v1.11.0
-	github.com/iaconlabs/transwarp v0.0.9
+	github.com/iaconlabs/transwarp v0.0.11
 )
 
 require (

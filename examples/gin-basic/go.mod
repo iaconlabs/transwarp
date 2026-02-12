@@ -9,7 +9,7 @@ go 1.25.7
 // replace github.com/iaconlabs/transwarp/adapter/ginadapter => ../../adapter/ginadapter
 
 require (
-	github.com/iaconlabs/transwarp v0.0.9
+	github.com/iaconlabs/transwarp v0.0.11
 	github.com/iaconlabs/transwarp/adapter/ginadapter v0.0.9
 )
 
