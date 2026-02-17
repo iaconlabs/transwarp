@@ -2,6 +2,10 @@ module github.com/iaconlabs/transwarp
 
 go 1.25.7
 
+retract (   
+    [v0.0.1, v0.0.25] // deprecated
+)
+
 require github.com/go-playground/validator/v10 v10.30.1
 
 require (
