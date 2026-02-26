@@ -11,6 +11,14 @@ import (
 	"github.com/profe-ajedrez/transwarp/router"
 )
 
+// FromEcho returns an HTTP middleware that adapts an Echo middleware into the net/http
+// handler chain while preserving shared request state via adapter.TranswarpState.
+//
+// It ensures a TranswarpState is present in the request context, captures the request
+// body before Echo consumes it (so it can be reused), synchronizes Echo path parameters
+// back into state.Params, re-injects the captured body for the downstream handler, and
+// forwards the next http.Handler via router.NextKey. If the Echo middleware returns an
+// error, it is handled by Echo's HTTPErrorHandler.
 func FromEcho(echoMw echo.MiddlewareFunc) func(http.Handler) http.Handler {
 	e := echo.New()
 

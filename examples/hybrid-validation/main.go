@@ -27,6 +27,8 @@ type InventoryUpdateDTO struct {
 	Reason   string `json:"reason" validate:"required,max=100"`
 }
 
+// main starts an example HTTP server demonstrating hybrid validation that merges URL path parameters and JSON body into an InventoryUpdateDTO.
+// It configures a MuxAdapter with SimpleCleaner, registers a POST route at /warehouses/:w_id/items/:sku with validation middleware, prints startup and curl instructions, and runs a managed server on :8080.
 func main() {
 	// 1. Initialize MuxAdapter with SimpleCleaner to support complex parameter names.
 	// This ensures that dots in paths don't break Go's standard ServeMux.
@@ -59,7 +61,7 @@ func main() {
 }
 
 // handleInventoryUpdate receives a request where data has already been
-// gathered from multiple sources and validated by the middleware.
+// On success the response contains keys "status", "message", and "payload".
 func handleInventoryUpdate(w http.ResponseWriter, r *http.Request) {
 	// Retrieve the validated struct from the context using router.ValidationKey.
 	data, ok := r.Context().Value(router.ValidationKey).(*InventoryUpdateDTO)

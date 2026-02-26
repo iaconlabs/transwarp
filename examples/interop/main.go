@@ -15,6 +15,14 @@ import (
 	"github.com/profe-ajedrez/transwarp/server"
 )
 
+// main starts a Transwarp HTTP server that demonstrates using Gin and Echo middlewares
+// together with a standard net/http (mux) adapter.
+//
+// It configures a mux adapter, attaches Gin's logger and Echo's CORS middleware
+// (allowing any origin, GET/POST/OPTIONS, and common headers), registers a GET
+// handler at /interop that responds with a plain-text message, registers an
+// OPTIONS handler to support CORS preflight requests, prints startup instructions,
+// and starts the server on :8080.
 func main() {
 	// 1. We start with the lightweight Standard Mux Adapter
 	adp := muxadapter.NewMuxAdapter(nil)
